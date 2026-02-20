@@ -14,7 +14,8 @@
     "eval:discovery": "node scripts/preflight.mjs && tsx src/discovery/eval.ts",
     "ops:check": "bash ./scripts/ops_check.sh",
     "ops:deep": "bash ./scripts/deep_check.sh",
-    "postinstall": "npm rebuild better-sqlite3 --build-from-source || true"
+    "postinstall": "npm rebuild better-sqlite3 --build-from-source || true",
+    "ops:split-check": "bash ./scripts/ops_split_check.sh"
   },
   "keywords": [],
   "author": "",

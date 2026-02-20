@@ -8,6 +8,11 @@ npm install
 npm run web
 ```
 
+## Split integration check (FE+BE)
+```bash
+FASTAPI_BASE=http://127.0.0.1:8000 npm run ops:split-check
+```
+
 Default local URL: `http://127.0.0.1:4173`
 
 ## API
