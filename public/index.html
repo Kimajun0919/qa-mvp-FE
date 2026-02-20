@@ -509,6 +509,9 @@
       stageLog('2/3 사용자/관리자 파이프라인 완료', true);
       const user = j.user || {};
       const admin = j.admin || {};
+      (j.userPhase || []).forEach(p => stageLog(`userPhase ${p.name}: ${p.status}`));
+      (j.adminPhase || []).forEach(p => stageLog(`adminPhase ${p.name}: ${p.status}`));
+      (j.bridgePhase || []).forEach(p => stageLog(`bridgePhase ${p.name}: ${p.status}`));
       lastAnalysisId = user.analysisId || lastAnalysisId;
       lastReportPath = user.reportPath || lastReportPath;
       lastReportJson = user.reportJson || lastReportJson;
