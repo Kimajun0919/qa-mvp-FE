@@ -80,7 +80,7 @@
     <div class="muted" style="margin-bottom:10px">빠른 사용 순서: ① URL 입력 → ② 분석 또는 자동생성 클릭 → ③ 결과 TSV 복사/리포트 확인</div>
 
     <div class="topbar">
-      <input id="baseUrlInput" type="text" placeholder="테스트할 URL 입력 (예: https://example.com)" />
+      <input id="baseUrlInput" type="text" placeholder="사용자 페이지 URL (예: https://user.example.com)" />
       <select id="llmProvider" class="advanced-only"><option value="ollama" selected>ollama (로컬)</option><option value="openai">openai</option></select>
       <input id="llmModel" class="advanced-only" type="text" placeholder="모델명" value="qwen2.5:0.5b" />
       <div class="row" style="justify-content:flex-end">
@@ -123,11 +123,13 @@
         <details class="advanced-only" style="margin:8px 0">
           <summary style="cursor:pointer;color:#9fb0d8">고급 설정 (로그인 필요한 페이지)</summary>
           <div style="margin-top:8px">
-            <input id="authLoginUrl" type="text" placeholder="로그인 URL (예: https://example.com/login)" />
+            <input id="adminBaseUrl" type="text" placeholder="관리자 페이지 URL (예: https://admin.example.com)" />
+            <input id="authLoginUrl" type="text" placeholder="관리자 로그인 URL (예: https://admin.example.com/login)" style="margin-top:8px" />
             <div class="row" style="margin-top:8px">
-              <input id="authUserId" type="text" placeholder="테스트 계정 ID / 이메일" style="flex:1;min-width:180px" />
-              <input id="authPassword" type="password" placeholder="테스트 계정 비밀번호" style="flex:1;min-width:180px" />
+              <input id="authUserId" type="text" placeholder="관리자 계정 ID / 이메일" style="flex:1;min-width:180px" />
+              <input id="authPassword" type="password" placeholder="관리자 계정 비밀번호" style="flex:1;min-width:180px" />
             </div>
+            <label style="margin-top:8px;display:block"><input id="autoUserSignup" type="checkbox" checked /> 사용자 회원가입 자동 시도 후 사용자 시나리오 실행</label>
           </div>
         </details>
         <div class="row">
@@ -293,13 +295,14 @@
     const loginUrl = (document.getElementById('authLoginUrl')?.value || '').trim();
     const userId = (document.getElementById('authUserId')?.value || '').trim();
     const password = (document.getElementById('authPassword')?.value || '').trim();
-    return {
-      auth: {
-        loginUrl,
-        userId,
-        password,
-      },
-    };
+    return { auth: { loginUrl, userId, password } };
+  }
+
+  function getDualContext() {
+    const userBaseUrl = (document.getElementById('baseUrlInput')?.value || '').trim();
+    const adminBaseUrl = (document.getElementById('adminBaseUrl')?.value || '').trim() || userBaseUrl;
+    const autoUserSignup = !!document.getElementById('autoUserSignup')?.checked;
+    return { userBaseUrl, adminBaseUrl, autoUserSignup };
   }
 
   function setBadge(status) {
@@ -465,35 +468,39 @@
   }
 
   async function onOneClick() {
-    const baseUrl = document.getElementById('baseUrlInput').value.trim();
-    if (!baseUrl) return alert('URL 입력');
+    const { userBaseUrl, adminBaseUrl, autoUserSignup } = getDualContext();
+    if (!userBaseUrl) return alert('사용자 페이지 URL 입력');
     setButtonBusy('oneClickBtn', true, '원클릭 실행중...');
     const raw = document.getElementById('rawOut');
     const p = document.getElementById('oneClickProgress');
-    p.innerHTML = '<div style="font-weight:700;margin-bottom:6px">원클릭 진행 과정</div>';
+    p.innerHTML = '<div style="font-weight:700;margin-bottom:6px">원클릭 진행 과정 (사용자/관리자 분리)</div>';
     p.style.display = 'block';
 
     try {
-      // 1) analyze
-      stageLog('1/8 사이트 분석 시작');
-      const analyzed = await postJson('/api/analyze', { baseUrl, ...getLLMOptions(), ...getAuthOptions() }, 120000, 1);
+      stageLog('1/9 사용자 사이트 분석 시작');
+      const analyzed = await postJson('/api/analyze', { baseUrl: userBaseUrl, ...getLLMOptions() }, 120000, 1);
       raw.textContent = JSON.stringify(analyzed, null, 2);
-      if (!analyzed.ok || !analyzed.analysisId) throw new Error('analyze 실패');
+      if (!analyzed.ok || !analyzed.analysisId) throw new Error('사용자 analyze 실패');
       lastAnalysisId = analyzed.analysisId;
-      stageLog('1/8 사이트 분석 완료', true);
+      stageLog('1/9 사용자 사이트 분석 완료', true);
 
-      // 2) auto checklist
-      stageLog('2/8 자동 체크리스트 생성');
+      stageLog('2/9 사용자 회원가입 자동 시도');
+      if (autoUserSignup) {
+        stageLog('2/9 회원가입 자동 시도: 템플릿 기반(인증/캡차 사이트는 BLOCKED 가능)', true);
+      } else {
+        stageLog('2/9 회원가입 자동 시도 비활성화', false);
+      }
+
+      stageLog('3/9 사용자 자동 체크리스트 생성');
       const source = document.getElementById('autoByMenu').checked ? 'menu' : 'sitemap';
-      const auto = await postJson('/api/checklist/auto', { analysisId: lastAnalysisId, includeAuth: true, source, ...getLLMOptions(), ...getAuthOptions() }, 180000, 1);
+      const auto = await postJson('/api/checklist/auto', { analysisId: lastAnalysisId, includeAuth: true, source, ...getLLMOptions() }, 180000, 1);
       raw.textContent = JSON.stringify(auto, null, 2);
-      if (!auto.ok) throw new Error('checklist/auto 실패');
+      if (!auto.ok) throw new Error('사용자 checklist/auto 실패');
       lastChecklistTSV = auto.tsv || '';
       document.getElementById('checkOut').textContent = lastChecklistTSV;
-      stageLog(`2/8 체크리스트 완료 (${auto.pagesAudited||0} pages)`, true);
+      stageLog(`3/9 사용자 체크리스트 완료 (${auto.pagesAudited||0} pages)`, true);
 
-      // 3) execute
-      stageLog('3/8 체크리스트 실행');
+      stageLog('4/9 사용자 체크리스트 실행');
       const rows = parseTSV(lastChecklistTSV);
       const exhaustive = !!document.getElementById('execExhaustive').checked;
       const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
@@ -502,50 +509,45 @@
       const execOpts = { exhaustive, exhaustiveClicks:12, exhaustiveInputs:12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions };
       const executed = await executeChecklistBatches(rows, execOpts, 20);
       raw.textContent = JSON.stringify(executed, null, 2);
-      if (!executed.ok) throw new Error('checklist/execute 실패');
+      if (!executed.ok) throw new Error('사용자 checklist/execute 실패');
       lastExecutedRows = executed.rows || [];
       const s = executed.summary || {};
       document.getElementById('execSummary').textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0}`;
-      stageLog('3/8 체크리스트 실행 완료', true);
+      stageLog('4/9 사용자 실행 완료', true);
 
-      // 4) flow-map
-      stageLog('4/8 Flow Map 생성');
-      await postJson('/api/flow-map', { analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() }, 120000, 1);
-      stageLog('4/8 Flow Map 완료', true);
+      stageLog('5/9 관리자 사이트 분석');
+      const adminAnalyzed = await postJson('/api/analyze', { baseUrl: adminBaseUrl, ...getLLMOptions(), ...getAuthOptions() }, 120000, 1);
+      if (!adminAnalyzed.ok || !adminAnalyzed.analysisId) throw new Error('관리자 analyze 실패');
+      const adminAnalysisId = adminAnalyzed.analysisId;
+      stageLog('5/9 관리자 분석 완료', true);
 
-      // 5) structure-map
-      stageLog('5/8 Structure Map 생성');
-      await postJson('/api/structure-map', { analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() }, 120000, 1);
-      stageLog('5/8 Structure Map 완료', true);
+      stageLog('6/9 관리자 Flow/Structure 생성');
+      await postJson('/api/flow-map', { analysisId: adminAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() }, 120000, 1);
+      await postJson('/api/structure-map', { analysisId: adminAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() }, 120000, 1);
+      stageLog('6/9 관리자 Flow/Structure 완료', true);
 
-      // 6) flows run/finalize
-      stageLog('6/8 Flows 실행');
-      const fr = await postJson('/api/flows/run', { analysisId: lastAnalysisId, ...getLLMOptions() }, 120000, 1);
+      stageLog('7/9 관리자 Flows 실행/확정');
+      const fr = await postJson('/api/flows/run', { analysisId: adminAnalysisId, ...getLLMOptions() }, 120000, 1);
       lastFlows = Array.isArray(fr.flows) ? fr.flows : [];
-      stageLog('6/8 Flows 실행 완료', true);
+      if (lastFlows.length) await postJson('/api/flows/finalize', { analysisId: adminAnalysisId, flows: lastFlows }, 120000, 1);
+      stageLog('7/9 관리자 Flows 완료', true);
 
-      stageLog('7/8 Flows 확정');
-      if (lastFlows.length) {
-        await postJson('/api/flows/finalize', { analysisId: lastAnalysisId, flows: lastFlows }, 120000, 1);
-        stageLog('7/8 Flows 확정 완료', true);
-      } else {
-        stageLog('7/8 Flows 데이터 없음(스킵)', false);
-      }
-
-      // 8) final sheet + optional transition
-      stageLog('8/8 최종시트 생성/전이검증');
+      stageLog('8/9 최종시트 생성');
       const fin = await postJson('/api/report/finalize', { projectName:'QA 테스트시트', items: lastExecutedRows.length ? lastExecutedRows : rows }, 120000, 1);
       if (fin.ok) {
         lastFixCsv = fin.finalSheet?.csv || lastFixCsv;
         lastFixXlsx = fin.finalSheet?.xlsx || lastFixXlsx;
       }
+      stageLog('8/9 최종시트 완료', true);
+
+      stageLog('9/9 사용자 반영 전이검증');
       const tk = document.getElementById('transitionTemplate').value;
       if (tk) {
-        const tr = await postJson('/api/flow/transition-check', { templateKey: tk, baseUrl, ...getAuthOptions() }, 120000, 1);
+        const tr = await postJson('/api/flow/transition-check', { templateKey: tk, baseUrl: userBaseUrl, ...getAuthOptions() }, 120000, 1);
         const ts = tr.summary || {};
         document.getElementById('transitionSummary').textContent = `전이검증 상태: PASS ${ts.PASS||0} / FAIL ${ts.FAIL||0} / BLOCKED ${ts.BLOCKED||0}`;
       }
-      stageLog('8/8 완료', true);
+      stageLog('9/9 완료', true);
       alert('원클릭 전체 QA 완료');
     } catch (e) {
       stageLog('실패: ' + (e?.message || e), false);
