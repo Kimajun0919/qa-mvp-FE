@@ -4,6 +4,7 @@ Goal: Human only makes final choices. Agents execute end-to-end.
 
 ## Roles
 - Orchestrator (Main): prioritize, assign, merge gate, final report.
+- Planning Agent (NEW): product planning owner (PRD scope, user stories, acceptance criteria, priority matrix, milestone slicing).
 - Planner Agent: convert request to executable backlog and acceptance criteria.
 - Design Agent: UX flows, component changes, copy, interaction states.
 - FE Agent: UI implementation + FE tests.
@@ -11,9 +12,10 @@ Goal: Human only makes final choices. Agents execute end-to-end.
 - QA Validation Agent: multi-site runs, final test/fix sheet generation.
 
 ## Working Protocol
-1. Orchestrator creates `MISSION.md` and `TASK_BOARD.md`.
-2. Each agent updates only assigned section.
-3. Every agent writes handoff block in `HANDOFF.md`:
+1. Planning Agent drafts/updates `PRD_LIVE.md` and `DECISION_LOG.md` before build starts.
+2. Orchestrator creates `MISSION.md` and `TASK_BOARD.md` from planning output.
+3. Each agent updates only assigned section.
+4. Every agent writes handoff block in `HANDOFF.md`:
    - What changed
    - Commit SHA
    - Verification evidence
