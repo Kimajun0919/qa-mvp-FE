@@ -411,6 +411,29 @@
     }
   }
 
+  async function postJson(path, body, timeoutMs = 120000, retries = 2) {
+    let lastErr = null;
+    for (let i = 0; i <= retries; i++) {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        const res = await fetch(apiUrl(path), {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body || {}),
+          signal: ctl.signal,
+        });
+        clearTimeout(t);
+        return await asJson(res);
+      } catch (e) {
+        clearTimeout(t);
+        lastErr = e;
+        if (i < retries) await new Promise(r => setTimeout(r, 1200 * (i + 1)));
+      }
+    }
+    throw new Error('네트워크/타임아웃 오류: ' + (lastErr?.message || lastErr));
+  }
+
   function stageLog(msg, ok = null) {
     const box = document.getElementById('oneClickProgress');
     box.style.display = 'block';
@@ -430,9 +453,7 @@
     try {
       // 1) analyze
       stageLog('1/8 사이트 분석 시작');
-      const analyzed = await asJson(await fetch(apiUrl('/api/analyze'), {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, ...getLLMOptions(), ...getAuthOptions() })
-      }));
+      const analyzed = await postJson('/api/analyze', { baseUrl, ...getLLMOptions(), ...getAuthOptions() }, 120000, 1);
       raw.textContent = JSON.stringify(analyzed, null, 2);
       if (!analyzed.ok || !analyzed.analysisId) throw new Error('analyze 실패');
       lastAnalysisId = analyzed.analysisId;
@@ -441,10 +462,7 @@
       // 2) auto checklist
       stageLog('2/8 자동 체크리스트 생성');
       const source = document.getElementById('autoByMenu').checked ? 'menu' : 'sitemap';
-      const auto = await asJson(await fetch(apiUrl('/api/checklist/auto'), {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ analysisId: lastAnalysisId, includeAuth: true, source, ...getLLMOptions(), ...getAuthOptions() })
-      }));
+      const auto = await postJson('/api/checklist/auto', { analysisId: lastAnalysisId, includeAuth: true, source, ...getLLMOptions(), ...getAuthOptions() }, 180000, 1);
       raw.textContent = JSON.stringify(auto, null, 2);
       if (!auto.ok) throw new Error('checklist/auto 실패');
       lastChecklistTSV = auto.tsv || '';
@@ -458,10 +476,7 @@
       const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
       const exhaustiveBudgetMs = Math.max(1000, parseInt(document.getElementById('exhaustiveBudgetMs')?.value || '20000', 10) || 20000);
       const allowRiskyActions = !!document.getElementById('allowRiskyActions')?.checked;
-      const executed = await asJson(await fetch(apiUrl('/api/checklist/execute'), {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ projectName:'QA 실행 결과', rows, exhaustive, exhaustiveClicks:12, exhaustiveInputs:12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions, ...getAuthOptions() })
-      }));
+      const executed = await postJson('/api/checklist/execute', { projectName:'QA 실행 결과', rows, exhaustive, exhaustiveClicks:12, exhaustiveInputs:12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions, ...getAuthOptions() }, 300000, 2);
       raw.textContent = JSON.stringify(executed, null, 2);
       if (!executed.ok) throw new Error('checklist/execute 실패');
       lastExecutedRows = executed.rows || [];
@@ -471,33 +486,23 @@
 
       // 4) flow-map
       stageLog('4/8 Flow Map 생성');
-      await asJson(await fetch(apiUrl('/api/flow-map'), {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() })
-      }));
+      await postJson('/api/flow-map', { analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() }, 120000, 1);
       stageLog('4/8 Flow Map 완료', true);
 
       // 5) structure-map
       stageLog('5/8 Structure Map 생성');
-      await asJson(await fetch(apiUrl('/api/structure-map'), {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() })
-      }));
+      await postJson('/api/structure-map', { analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() }, 120000, 1);
       stageLog('5/8 Structure Map 완료', true);
 
       // 6) flows run/finalize
       stageLog('6/8 Flows 실행');
-      const fr = await asJson(await fetch(apiUrl('/api/flows/run'), {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ analysisId: lastAnalysisId, ...getLLMOptions() })
-      }));
+      const fr = await postJson('/api/flows/run', { analysisId: lastAnalysisId, ...getLLMOptions() }, 120000, 1);
       lastFlows = Array.isArray(fr.flows) ? fr.flows : [];
       stageLog('6/8 Flows 실행 완료', true);
 
       stageLog('7/8 Flows 확정');
       if (lastFlows.length) {
-        await asJson(await fetch(apiUrl('/api/flows/finalize'), {
-          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ analysisId: lastAnalysisId, flows: lastFlows })
-        }));
+        await postJson('/api/flows/finalize', { analysisId: lastAnalysisId, flows: lastFlows }, 120000, 1);
         stageLog('7/8 Flows 확정 완료', true);
       } else {
         stageLog('7/8 Flows 데이터 없음(스킵)', false);
@@ -505,18 +510,14 @@
 
       // 8) final sheet + optional transition
       stageLog('8/8 최종시트 생성/전이검증');
-      const fin = await asJson(await fetch(apiUrl('/api/report/finalize'), {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ projectName:'QA 테스트시트', items: lastExecutedRows.length ? lastExecutedRows : rows })
-      }));
+      const fin = await postJson('/api/report/finalize', { projectName:'QA 테스트시트', items: lastExecutedRows.length ? lastExecutedRows : rows }, 120000, 1);
       if (fin.ok) {
         lastFixCsv = fin.finalSheet?.csv || lastFixCsv;
         lastFixXlsx = fin.finalSheet?.xlsx || lastFixXlsx;
       }
       const tk = document.getElementById('transitionTemplate').value;
       if (tk) {
-        const tr = await asJson(await fetch(apiUrl('/api/flow/transition-check'), {
-          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ templateKey: tk, baseUrl, ...getAuthOptions() })
-        }));
+        const tr = await postJson('/api/flow/transition-check', { templateKey: tk, baseUrl, ...getAuthOptions() }, 120000, 1);
         const ts = tr.summary || {};
         document.getElementById('transitionSummary').textContent = `전이검증 상태: PASS ${ts.PASS||0} / FAIL ${ts.FAIL||0} / BLOCKED ${ts.BLOCKED||0}`;
       }
