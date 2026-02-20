@@ -86,8 +86,8 @@
       <div class="row" style="justify-content:flex-end">
         <button id="setApiBaseBtn" class="btn secondary advanced-only">API 주소</button>
         <button id="testApiBtn" class="btn secondary advanced-only">연결 테스트</button>
-        <button id="analyzeBtn" class="btn secondary">1) 사이트 분석</button>
-        <button id="oneClickBtn" class="btn">빠른 실행(원클릭)</button>
+        <button id="analyzeBtn" class="btn secondary advanced-only">1) 사이트 분석</button>
+        <button id="oneClickBtn" class="btn">원클릭 전체 QA 실행</button>
       </div>
     </div>
     <div class="muted" id="apiBaseHint" style="margin-top:8px">API: same-origin (현재 도메인)</div>
@@ -136,8 +136,8 @@
           <label><input id="execExhaustive" type="checkbox" /> 전수검사(느리지만 상세)</label>
           <label class="advanced-only"><input id="allowRiskyActions" type="checkbox" /> 위험액션 허용</label>
           <button id="checkBtn" class="btn secondary advanced-only">단일 체크리스트 생성</button>
-          <button id="autoCheckBtn" class="btn">전체 자동생성(사이트맵/메뉴맵)</button>
-          <button id="execBtn" class="btn secondary">체크리스트 실행</button>
+          <button id="autoCheckBtn" class="btn advanced-only">전체 자동생성(사이트맵/메뉴맵)</button>
+          <button id="execBtn" class="btn secondary advanced-only">체크리스트 실행</button>
           <button id="finalizeBtn" class="btn secondary advanced-only">최종시트 생성</button>
         </div>
         <div class="row advanced-only" style="margin-top:6px">
@@ -159,6 +159,7 @@
         <div id="autoProgress" class="muted" style="margin-top:8px">자동생성 상태: 대기</div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
         <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
+        <div id="oneClickProgress" class="advisory-box" style="margin-top:8px; display:none"></div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
       </section>
     </div>
@@ -399,24 +400,131 @@
     }
   }
 
+  async function asJson(res) {
+    const t = await res.text();
+    try { return JSON.parse(t); }
+    catch (_) {
+      if ((t || '').startsWith('<!DOCTYPE') || (t || '').startsWith('<html')) {
+        throw new Error('API가 JSON 대신 HTML을 반환했습니다. API 주소를 설정하세요.');
+      }
+      throw new Error('JSON 파싱 실패: ' + t.slice(0, 120));
+    }
+  }
+
+  function stageLog(msg, ok = null) {
+    const box = document.getElementById('oneClickProgress');
+    box.style.display = 'block';
+    const color = ok === true ? '#86efac' : (ok === false ? '#fca5a5' : '#9fb0d8');
+    box.innerHTML += `<div style="color:${color};margin:2px 0">• ${msg}</div>`;
+  }
+
   async function onOneClick() {
     const baseUrl = document.getElementById('baseUrlInput').value.trim();
     if (!baseUrl) return alert('URL 입력');
-    setButtonBusy('oneClickBtn', true, '실행중...');
+    setButtonBusy('oneClickBtn', true, '원클릭 실행중...');
+    const raw = document.getElementById('rawOut');
+    const p = document.getElementById('oneClickProgress');
+    p.innerHTML = '<div style="font-weight:700;margin-bottom:6px">원클릭 진행 과정</div>';
+    p.style.display = 'block';
+
     try {
-      const body = { baseUrl, ...getLLMOptions(), ...getAuthOptions() };
-      const j = await (await fetch(apiUrl('/api/oneclick'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
-      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
-      if (j.ok) {
-        lastAnalysisId = j.analysisId || j.analysis?.analysisId || lastAnalysisId;
-        lastReportPath = j.reportPath || '';
-        lastReportJson = j.reportJson || '';
-        lastFixCsv = j.fixSheet?.csv || '';
-        lastFixXlsx = j.fixSheet?.xlsx || '';
-        const reports = await loadReports(j.analysisReports);
-        updateKPIs(reports?.quality, j.finalStatus);
-        renderAdvisories(j.advisories || j.analysis?.advisories || []);
+      // 1) analyze
+      stageLog('1/8 사이트 분석 시작');
+      const analyzed = await asJson(await fetch(apiUrl('/api/analyze'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, ...getLLMOptions(), ...getAuthOptions() })
+      }));
+      raw.textContent = JSON.stringify(analyzed, null, 2);
+      if (!analyzed.ok || !analyzed.analysisId) throw new Error('analyze 실패');
+      lastAnalysisId = analyzed.analysisId;
+      stageLog('1/8 사이트 분석 완료', true);
+
+      // 2) auto checklist
+      stageLog('2/8 자동 체크리스트 생성');
+      const source = document.getElementById('autoByMenu').checked ? 'menu' : 'sitemap';
+      const auto = await asJson(await fetch(apiUrl('/api/checklist/auto'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ analysisId: lastAnalysisId, includeAuth: true, source, ...getLLMOptions(), ...getAuthOptions() })
+      }));
+      raw.textContent = JSON.stringify(auto, null, 2);
+      if (!auto.ok) throw new Error('checklist/auto 실패');
+      lastChecklistTSV = auto.tsv || '';
+      document.getElementById('checkOut').textContent = lastChecklistTSV;
+      stageLog(`2/8 체크리스트 완료 (${auto.pagesAudited||0} pages)`, true);
+
+      // 3) execute
+      stageLog('3/8 체크리스트 실행');
+      const rows = parseTSV(lastChecklistTSV);
+      const exhaustive = !!document.getElementById('execExhaustive').checked;
+      const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
+      const exhaustiveBudgetMs = Math.max(1000, parseInt(document.getElementById('exhaustiveBudgetMs')?.value || '20000', 10) || 20000);
+      const allowRiskyActions = !!document.getElementById('allowRiskyActions')?.checked;
+      const executed = await asJson(await fetch(apiUrl('/api/checklist/execute'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ projectName:'QA 실행 결과', rows, exhaustive, exhaustiveClicks:12, exhaustiveInputs:12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions, ...getAuthOptions() })
+      }));
+      raw.textContent = JSON.stringify(executed, null, 2);
+      if (!executed.ok) throw new Error('checklist/execute 실패');
+      lastExecutedRows = executed.rows || [];
+      const s = executed.summary || {};
+      document.getElementById('execSummary').textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0}`;
+      stageLog('3/8 체크리스트 실행 완료', true);
+
+      // 4) flow-map
+      stageLog('4/8 Flow Map 생성');
+      await asJson(await fetch(apiUrl('/api/flow-map'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() })
+      }));
+      stageLog('4/8 Flow Map 완료', true);
+
+      // 5) structure-map
+      stageLog('5/8 Structure Map 생성');
+      await asJson(await fetch(apiUrl('/api/structure-map'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ analysisId: lastAnalysisId, screen: (document.getElementById('checkScreen').value||'').trim(), context: (document.getElementById('checkContext').value||'').trim() })
+      }));
+      stageLog('5/8 Structure Map 완료', true);
+
+      // 6) flows run/finalize
+      stageLog('6/8 Flows 실행');
+      const fr = await asJson(await fetch(apiUrl('/api/flows/run'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ analysisId: lastAnalysisId, ...getLLMOptions() })
+      }));
+      lastFlows = Array.isArray(fr.flows) ? fr.flows : [];
+      stageLog('6/8 Flows 실행 완료', true);
+
+      stageLog('7/8 Flows 확정');
+      if (lastFlows.length) {
+        await asJson(await fetch(apiUrl('/api/flows/finalize'), {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ analysisId: lastAnalysisId, flows: lastFlows })
+        }));
+        stageLog('7/8 Flows 확정 완료', true);
+      } else {
+        stageLog('7/8 Flows 데이터 없음(스킵)', false);
       }
+
+      // 8) final sheet + optional transition
+      stageLog('8/8 최종시트 생성/전이검증');
+      const fin = await asJson(await fetch(apiUrl('/api/report/finalize'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ projectName:'QA 테스트시트', items: lastExecutedRows.length ? lastExecutedRows : rows })
+      }));
+      if (fin.ok) {
+        lastFixCsv = fin.finalSheet?.csv || lastFixCsv;
+        lastFixXlsx = fin.finalSheet?.xlsx || lastFixXlsx;
+      }
+      const tk = document.getElementById('transitionTemplate').value;
+      if (tk) {
+        const tr = await asJson(await fetch(apiUrl('/api/flow/transition-check'), {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ templateKey: tk, baseUrl, ...getAuthOptions() })
+        }));
+        const ts = tr.summary || {};
+        document.getElementById('transitionSummary').textContent = `전이검증 상태: PASS ${ts.PASS||0} / FAIL ${ts.FAIL||0} / BLOCKED ${ts.BLOCKED||0}`;
+      }
+      stageLog('8/8 완료', true);
+      alert('원클릭 전체 QA 완료');
+    } catch (e) {
+      stageLog('실패: ' + (e?.message || e), false);
+      alert('원클릭 실패: ' + (e?.message || e));
     } finally {
       setButtonBusy('oneClickBtn', false);
     }
