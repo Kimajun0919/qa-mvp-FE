@@ -210,6 +210,7 @@
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
         <div id="retryStatsPanel" class="retry-panel advanced-only" style="display:none"></div>
         <div id="parityDriftPanel" class="parity-drift-panel advanced-only" style="display:none"></div>
+        <div id="validationLanePanel" class="validation-delta-panel advanced-only" style="display:none"></div>
         <div id="validationDeltaPanel" class="validation-delta-panel advanced-only" style="display:none"></div>
         <div id="remediationHints" class="remediation-box advanced-only" style="display:none"></div>
         <div id="execEvidenceHint" class="mini" style="margin-top:6px">실행 증거 상세: 대기</div>
@@ -293,6 +294,7 @@
   let lastAnalysisId = '';
   let lastFlows = [];
   let lastValidationDelta = null;
+  let lastValidationLaneStatus = null;
   let autopilotDone = ['대기 중'];
   let autopilotActive = ['요청 대기'];
 
@@ -308,6 +310,7 @@
       s.style.opacity = (m === 'simple') ? '1' : '0.7';
       a.style.opacity = (m === 'advanced') ? '1' : '0.7';
     }
+    renderValidationLanePanel(lastValidationLaneStatus);
     renderValidationDeltaPanel(lastValidationDelta);
   }
 
@@ -1142,6 +1145,77 @@
     return Number.isFinite(n) ? n : null;
   }
 
+  function normalizeLaneStatus(value) {
+    if (value == null) return null;
+    if (typeof value === 'boolean') return value ? 'PASS' : 'FAIL';
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const upper = raw.toUpperCase();
+    if (['PASS', 'OK', 'SUCCESS', 'HEALTHY', 'UP'].includes(upper)) return 'PASS';
+    if (['FAIL', 'FAILED', 'ERROR', 'DOWN', 'UNHEALTHY'].includes(upper)) return 'FAIL';
+    if (['WARN', 'WARNING', 'DEGRADED'].includes(upper)) return 'WARN';
+    return upper;
+  }
+
+  function readLaneStatusFromObject(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    const readStatus = (v) => normalizeLaneStatus(v?.status ?? v?.result ?? v?.laneStatus ?? v?.finalStatus ?? v?.state ?? v?.ok ?? v);
+
+    const nodeCandidate = obj?.node ?? obj?.nodejs ?? obj?.nodeLane ?? obj?.nodeStatus ?? obj?.nodeResult;
+    const fastapiCandidate = obj?.fastapi ?? obj?.fastApi ?? obj?.fastapiLane ?? obj?.fastapiStatus ?? obj?.fastapiResult ?? obj?.python;
+
+    const nodeStatus = readStatus(nodeCandidate);
+    const fastapiStatus = readStatus(fastapiCandidate);
+    if (nodeStatus || fastapiStatus) return { nodeStatus, fastapiStatus };
+
+    const laneRows = Array.isArray(obj?.lanes) ? obj.lanes : (Array.isArray(obj) ? obj : null);
+    if (!laneRows) return null;
+
+    let fromRowsNode = null;
+    let fromRowsFastapi = null;
+    laneRows.forEach((lane) => {
+      const name = String(lane?.name || lane?.lane || lane?.service || lane?.target || '').toLowerCase();
+      const status = readStatus(lane);
+      if (!status) return;
+      if (!fromRowsNode && (name.includes('node') || name.includes('web'))) fromRowsNode = status;
+      if (!fromRowsFastapi && (name.includes('fastapi') || name.includes('python'))) fromRowsFastapi = status;
+    });
+    if (fromRowsNode || fromRowsFastapi) return { nodeStatus: fromRowsNode, fastapiStatus: fromRowsFastapi };
+    return null;
+  }
+
+  function normalizeValidationLaneStatus(payload) {
+    const root = firstObj(payload, {});
+    const summaryCandidates = [
+      root?.latestValidationSummary,
+      root?.validationSummary,
+      root?.validation?.summary,
+      root?.validation?.latestSummary,
+      root?.summary?.validation,
+      root?.ops?.validationSummary,
+      root?.validation,
+      root,
+    ].filter(Boolean);
+
+    for (const summary of summaryCandidates) {
+      const laneCandidates = [
+        summary?.nodeVsFastapi,
+        summary?.nodeFastapi,
+        summary?.laneStatus,
+        summary?.laneStatuses,
+        summary?.backendLaneStatus,
+        summary?.backends,
+        summary?.services,
+        summary,
+      ];
+      for (const candidate of laneCandidates) {
+        const parsed = readLaneStatusFromObject(candidate);
+        if (parsed && (parsed.nodeStatus || parsed.fastapiStatus)) return parsed;
+      }
+    }
+    return null;
+  }
+
   function normalizeValidationDelta(payload) {
     const root = firstObj(payload, {});
     const candidateRoots = [
@@ -1177,6 +1251,36 @@
     return { flips, drifts };
   }
 
+  async function loadValidationLaneStatusFromPaths(payload) {
+    const keys = [
+      payload?.latestValidationSummaryPath,
+      payload?.validationSummaryPath,
+      payload?.paths?.latestValidationSummaryPath,
+      payload?.paths?.validationSummaryPath,
+      payload?.artifacts?.latestValidationSummaryPath,
+      payload?.artifacts?.validationSummaryPath,
+      payload?.report?.latestValidationSummaryPath,
+      payload?.report?.validationSummaryPath,
+      payload?.latest?.validationSummaryPath,
+    ].filter(Boolean);
+    for (const k of keys) {
+      try {
+        const res = await fetch(fileUrl(k));
+        if (!res.ok) continue;
+        const j = await res.json();
+        const normalized = normalizeValidationLaneStatus(j);
+        if (normalized) return normalized;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  async function hydrateValidationLaneStatus(payload) {
+    const fromPayload = normalizeValidationLaneStatus(payload);
+    if (fromPayload) return fromPayload;
+    return await loadValidationLaneStatusFromPaths(payload || {});
+  }
+
   async function loadValidationDeltaFromPaths(payload) {
     const keys = [
       payload?.latestValidationDeltaPath,
@@ -1205,6 +1309,33 @@
     const fromPayload = normalizeValidationDelta(payload);
     if (fromPayload) return fromPayload;
     return await loadValidationDeltaFromPaths(payload || {});
+  }
+
+  function renderValidationLanePanel(data) {
+    const box = document.getElementById('validationLanePanel');
+    if (!box) return;
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced' || !data || (!data.nodeStatus && !data.fastapiStatus)) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const chip = (name, status) => {
+      const state = normalizeLaneStatus(status) || 'UNKNOWN';
+      const cls = state === 'PASS' ? 'PASS' : (state === 'WARN' ? 'PASS_WITH_WARNINGS' : (state === 'FAIL' ? 'FAIL' : 'PASS_WITH_WARNINGS'));
+      return `<span class="summary-chip">${safeText(name)} <span class="badge ${cls}" style="margin-left:6px">${safeText(state)}</span></span>`;
+    };
+
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="font-weight:700">Node vs FastAPI Lane Status</div>
+      <div class="delta-badge-row">
+        ${chip('Node', data.nodeStatus)}
+        ${chip('FastAPI', data.fastapiStatus)}
+      </div>
+      <div class="mini" style="margin-top:6px">validation summary 기반 표시 (값이 있을 때만 노출)</div>
+    `;
   }
 
   function renderValidationDeltaPanel(data) {
@@ -1242,6 +1373,16 @@
       ${flips.length ? `<div class="mini" style="margin-top:8px">최근 상태 전환</div><ul class="delta-list">${flipRows}</ul>` : ''}
       ${drifts.length ? `<div class="mini" style="margin-top:8px">Candidate drift badge</div><div>${driftBadges}</div>` : ''}
     `;
+  }
+
+  async function refreshValidationLaneStatus(payload) {
+    try {
+      const data = await hydrateValidationLaneStatus(payload);
+      lastValidationLaneStatus = data;
+      renderValidationLanePanel(lastValidationLaneStatus);
+    } catch (_) {
+      renderValidationLanePanel(lastValidationLaneStatus);
+    }
   }
 
   async function refreshValidationDelta(payload) {
@@ -1510,6 +1651,7 @@
         renderFailureCodeStats(lastExecutedRows);
         renderRetryStatsPanel(lastExecutedRows, final.retryStats);
         renderParityDriftPanel(final);
+        await refreshValidationLaneStatus(final);
         await refreshValidationDelta(final);
         applyFailureCodeFilter();
         const s = final.summary || {};
@@ -1522,6 +1664,7 @@
         renderFailureCodeStats([]);
         renderRetryStatsPanel([], null);
         renderParityDriftPanel(final);
+        await refreshValidationLaneStatus(final);
         await refreshValidationDelta(final);
         renderExecutedRowsTable([]);
       }
@@ -1534,6 +1677,7 @@
       renderRetryStatsPanel([], null);
       renderParityDriftPanel(null);
       renderExecutedRowsTable([]);
+      renderValidationLanePanel(lastValidationLaneStatus);
       renderValidationDeltaPanel(lastValidationDelta);
     } finally {
       setButtonBusy('execBtn', false);
