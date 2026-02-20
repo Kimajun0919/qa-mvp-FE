@@ -93,6 +93,7 @@
     .parity-drift-list li { margin:4px 0; font-size:13px; color:#fde68a; }
     .ops-guard { margin-top:8px; border:1px solid rgba(245,158,11,.45); border-radius:10px; background:rgba(245,158,11,.10); padding:10px; color:#fde68a; }
     .validation-delta-panel { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .gate-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; color:#c6d5fb; }
     .delta-badge-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
     .delta-list { margin:6px 0 0 0; padding-left:18px; }
     .delta-list li { margin:4px 0; font-size:13px; color:var(--muted); }
@@ -210,6 +211,7 @@
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
         <div id="retryStatsPanel" class="retry-panel advanced-only" style="display:none"></div>
         <div id="parityDriftPanel" class="parity-drift-panel advanced-only" style="display:none"></div>
+        <div id="antiRegressionGatePanel" class="validation-delta-panel advanced-only" style="display:none"></div>
         <div id="validationLanePanel" class="validation-delta-panel advanced-only" style="display:none"></div>
         <div id="validationDeltaPanel" class="validation-delta-panel advanced-only" style="display:none"></div>
         <div id="remediationHints" class="remediation-box advanced-only" style="display:none"></div>
@@ -295,6 +297,7 @@
   let lastFlows = [];
   let lastValidationDelta = null;
   let lastValidationLaneStatus = null;
+  let lastAntiRegressionGate = null;
   let autopilotDone = ['대기 중'];
   let autopilotActive = ['요청 대기'];
 
@@ -312,6 +315,7 @@
     }
     renderValidationLanePanel(lastValidationLaneStatus);
     renderValidationDeltaPanel(lastValidationDelta);
+    renderAntiRegressionGatePanel(lastAntiRegressionGate);
   }
 
   function getApiBase() {
@@ -542,6 +546,7 @@
         const reports = await loadReports(j.reports);
         updateKPIs(reports?.quality, '-');
         renderAdvisories(j.advisories || []);
+        await refreshAntiRegressionGate(j);
         await refreshValidationDelta(j);
       }
     } finally {
@@ -674,6 +679,7 @@
 
       stageLog('3/3 완료', true);
       autopilotStepDone('리포트/아티팩트 갱신 완료', []);
+      await refreshAntiRegressionGate(j);
       await refreshValidationDelta(j);
       alert('원클릭 전체 QA 완료');
     } catch (e) {
@@ -1251,6 +1257,109 @@
     return { flips, drifts };
   }
 
+  function boolOrStatus(value) {
+    if (value == null) return null;
+    if (typeof value === 'boolean') return value ? 'PASS' : 'FAIL';
+    const norm = normalizeLaneStatus(value);
+    if (norm) return norm;
+    const txt = String(value).trim();
+    return txt ? txt.toUpperCase() : null;
+  }
+
+  function normalizeAntiRegressionGate(payload) {
+    const root = firstObj(payload, {});
+    const source = firstObj(
+      root?.antiRegressionGate,
+      root?.antiRegression,
+      root?.qualityGate,
+      root?.regressionGate,
+      root?.gates?.antiRegression,
+      root?.gates,
+      root?.quality?.antiRegressionGate,
+      root?.quality,
+      root
+    );
+    if (!source) return null;
+
+    const parityRaw = source?.parityGate ?? source?.parity ?? source?.parityReadiness ?? source?.parity_ready ?? source?.parityStatus;
+    const fineRaw = source?.fineChecklistGate ?? source?.fineChecklist ?? source?.fineChecklistReadiness ?? source?.fine_checklist_readiness ?? source?.fineChecklistStatus;
+    const overallRaw = source?.overall ?? source?.status ?? source?.gateStatus ?? source?.result;
+
+    const parity = boolOrStatus(parityRaw);
+    const fineChecklist = boolOrStatus(fineRaw);
+    const overall = boolOrStatus(overallRaw);
+
+    const reasonsRaw = source?.reasons || source?.messages || source?.notes || source?.warnings || [];
+    const reasons = (Array.isArray(reasonsRaw) ? reasonsRaw : [reasonsRaw])
+      .map((x) => safeText(x).trim())
+      .filter(Boolean)
+      .slice(0, 6);
+
+    if (!parity && !fineChecklist && !overall && !reasons.length) return null;
+    return { parity, fineChecklist, overall, reasons };
+  }
+
+  function renderAntiRegressionGatePanel(data) {
+    const box = document.getElementById('antiRegressionGatePanel');
+    if (!box) return;
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced' || !data) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const chip = (name, status) => {
+      const st = normalizeLaneStatus(status) || String(status || 'UNKNOWN').toUpperCase();
+      const cls = st === 'PASS' || st === 'READY' ? 'PASS' : (st === 'WARN' ? 'PASS_WITH_WARNINGS' : 'FAIL');
+      return `<span class="gate-pill">${safeText(name)} <span class="badge ${cls}" style="margin-left:4px">${safeText(st)}</span></span>`;
+    };
+
+    const reasonList = (data.reasons || []).length
+      ? `<ul class="delta-list">${data.reasons.map((r) => `<li>${safeText(r)}</li>`).join('')}</ul>`
+      : '';
+
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="font-weight:700">Anti-regression Gate</div>
+      <div class="delta-badge-row" style="margin-top:8px;">
+        ${data.overall ? chip('Overall', data.overall) : ''}
+        ${data.parity ? chip('Parity', data.parity) : ''}
+        ${data.fineChecklist ? chip('Fine-checklist readiness', data.fineChecklist) : ''}
+      </div>
+      ${reasonList}
+      <div class="mini" style="margin-top:6px">payload에 anti-regression gate 결과가 있을 때만 표시됩니다.</div>
+    `;
+  }
+
+  async function loadAntiRegressionGateFromPaths(payload) {
+    const keys = [
+      payload?.antiRegressionGatePath,
+      payload?.qualityGatePath,
+      payload?.paths?.antiRegressionGatePath,
+      payload?.paths?.qualityGatePath,
+      payload?.artifacts?.antiRegressionGatePath,
+      payload?.artifacts?.qualityGatePath,
+      payload?.report?.antiRegressionGatePath,
+    ].filter(Boolean);
+    for (const k of keys) {
+      try {
+        const res = await fetch(fileUrl(k));
+        if (!res.ok) continue;
+        const j = await res.json();
+        const parsed = normalizeAntiRegressionGate(j);
+        if (parsed) return parsed;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  async function hydrateAntiRegressionGate(payload) {
+    const parsed = normalizeAntiRegressionGate(payload);
+    if (parsed) return parsed;
+    return await loadAntiRegressionGateFromPaths(payload || {});
+  }
+
   async function loadValidationLaneStatusFromPaths(payload) {
     const keys = [
       payload?.latestValidationSummaryPath,
@@ -1382,6 +1491,16 @@
       renderValidationLanePanel(lastValidationLaneStatus);
     } catch (_) {
       renderValidationLanePanel(lastValidationLaneStatus);
+    }
+  }
+
+  async function refreshAntiRegressionGate(payload) {
+    try {
+      const data = await hydrateAntiRegressionGate(payload);
+      lastAntiRegressionGate = data;
+      renderAntiRegressionGatePanel(lastAntiRegressionGate);
+    } catch (_) {
+      renderAntiRegressionGatePanel(lastAntiRegressionGate);
     }
   }
 
@@ -1651,6 +1770,7 @@
         renderFailureCodeStats(lastExecutedRows);
         renderRetryStatsPanel(lastExecutedRows, final.retryStats);
         renderParityDriftPanel(final);
+        await refreshAntiRegressionGate(final);
         await refreshValidationLaneStatus(final);
         await refreshValidationDelta(final);
         applyFailureCodeFilter();
@@ -1664,6 +1784,7 @@
         renderFailureCodeStats([]);
         renderRetryStatsPanel([], null);
         renderParityDriftPanel(final);
+        await refreshAntiRegressionGate(final);
         await refreshValidationLaneStatus(final);
         await refreshValidationDelta(final);
         renderExecutedRowsTable([]);
@@ -1677,6 +1798,7 @@
       renderRetryStatsPanel([], null);
       renderParityDriftPanel(null);
       renderExecutedRowsTable([]);
+      renderAntiRegressionGatePanel(lastAntiRegressionGate);
       renderValidationLanePanel(lastValidationLaneStatus);
       renderValidationDeltaPanel(lastValidationDelta);
     } finally {
