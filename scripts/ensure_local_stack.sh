@@ -2,9 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+FASTAPI_BASE="${FASTAPI_BASE:-http://127.0.0.1:8000}"
 
 pkill -f "tsx src/web/server.ts" >/dev/null 2>&1 || true
-pkill -f "uvicorn app.main:app --host 127.0.0.1 --port 8000" >/dev/null 2>&1 || true
+# Only kill local fastapi if FE repo has embedded backend dir (monorepo fallback)
+if [ -d "$ROOT/backend-fastapi" ]; then
+  pkill -f "uvicorn app.main:app --host 127.0.0.1 --port 8000" >/dev/null 2>&1 || true
+fi
 sleep 1
 
 (
@@ -12,11 +16,13 @@ sleep 1
   nohup zsh -lc 'unset npm_config_prefix; source ~/.zshrc >/dev/null 2>&1; nvm use 22 >/dev/null; npm run web' > /tmp/qa_node_web.log 2>&1 &
 )
 
-(
-  cd "$ROOT/backend-fastapi"
-  source .venv/bin/activate
-  nohup env QA_NODE_API_BASE=http://127.0.0.1:4173 QA_WEB_ORIGIN='*' QA_HTTP_VERIFY_TLS=false QA_FASTAPI_USE_PLAYWRIGHT=false uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/qa_fastapi.log 2>&1 &
-)
+if [ -d "$ROOT/backend-fastapi" ]; then
+  (
+    cd "$ROOT/backend-fastapi"
+    source .venv/bin/activate
+    nohup env QA_NODE_API_BASE=http://127.0.0.1:4173 QA_WEB_ORIGIN='*' QA_HTTP_VERIFY_TLS=false QA_FASTAPI_USE_PLAYWRIGHT=false uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/qa_fastapi.log 2>&1 &
+  )
+fi
 
 wait_for() {
   local url="$1"
@@ -37,7 +43,13 @@ wait_for() {
 NODE_OK=0
 FASTAPI_OK=0
 wait_for "http://127.0.0.1:4173/" "node" || NODE_OK=1
-wait_for "http://127.0.0.1:8000/health" "fastapi" || FASTAPI_OK=1
+
+if [ -d "$ROOT/backend-fastapi" ]; then
+  wait_for "http://127.0.0.1:8000/health" "fastapi(local)" || FASTAPI_OK=1
+else
+  # split-repo mode: just check configured backend endpoint
+  wait_for "$FASTAPI_BASE/health" "fastapi(remote-or-separate)" || FASTAPI_OK=1
+fi
 
 echo "logs: /tmp/qa_node_web.log /tmp/qa_fastapi.log"
 exit $(( NODE_OK + FASTAPI_OK ))
