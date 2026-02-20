@@ -83,6 +83,9 @@
     .retry-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
     .retry-list { margin:6px 0 0 0; padding-left:18px; }
     .retry-list li { margin:4px 0; font-size:13px; color:var(--muted); }
+    .parity-drift-panel { margin-top:8px; border:1px solid rgba(245,158,11,.45); border-radius:10px; background:rgba(245,158,11,.10); padding:10px; }
+    .parity-drift-list { margin:6px 0 0 0; padding-left:18px; }
+    .parity-drift-list li { margin:4px 0; font-size:13px; color:#fde68a; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -194,6 +197,7 @@
         </div>
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
         <div id="retryStatsPanel" class="retry-panel advanced-only" style="display:none"></div>
+        <div id="parityDriftPanel" class="parity-drift-panel advanced-only" style="display:none"></div>
         <div id="remediationHints" class="remediation-box advanced-only" style="display:none"></div>
         <div id="execEvidenceHint" class="mini" style="margin-top:6px">실행 증거 상세: 대기</div>
         <div class="table-wrap" id="execRowsWrap" style="display:none; max-height:280px;">
@@ -940,6 +944,76 @@
     `;
   }
 
+  function extractParitySignals(payload) {
+    const signals = [];
+    const seen = new Set();
+
+    function pushSignal(value) {
+      if (value == null) return;
+      const text = String(value).trim();
+      if (!text) return;
+      if (seen.has(text)) return;
+      seen.add(text);
+      signals.push(text);
+    }
+
+    function pushFromArray(arr) {
+      if (!Array.isArray(arr)) return;
+      arr.forEach((item) => {
+        if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') pushSignal(item);
+        else if (item && typeof item === 'object') {
+          pushSignal(item.message || item.reason || item.code || item.type || item.path);
+        }
+      });
+    }
+
+    const root = (payload && typeof payload === 'object') ? payload : {};
+    const candidates = [
+      root.parity,
+      root.parityDrift,
+      root.parityMismatch,
+      root.mismatchIndicators,
+      root.mismatch,
+      root.drift,
+      root.warnings,
+      root.summary,
+      root.meta,
+      root.coverage,
+      root.executionInsights,
+      root.insights,
+    ].filter(Boolean);
+
+    candidates.forEach((obj) => {
+      if (!obj || typeof obj !== 'object') return;
+      pushFromArray(obj.mismatchIndicators);
+      pushFromArray(obj.indicators);
+      pushFromArray(obj.mismatches);
+      pushFromArray(obj.drifts);
+      pushFromArray(obj.warnings);
+      if (obj.isDrift === true || obj.hasMismatch === true || obj.mismatch === true || obj.detected === true) {
+        pushSignal(obj.message || obj.reason || 'Parity drift/mismatch detected by backend');
+      }
+      pushSignal(obj.parityDriftMessage);
+      pushSignal(obj.mismatchMessage);
+    });
+
+    return signals.slice(0, 8);
+  }
+
+  function renderParityDriftPanel(payload) {
+    const box = document.getElementById('parityDriftPanel');
+    if (!box) return;
+    const signals = extractParitySignals(payload);
+    if (!signals.length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-weight:700">⚠️ Parity Drift 경고</div><div class="mini" style="margin-top:4px">백엔드 응답에서 실행 결과 불일치(mismatch) 신호가 감지되었습니다. 상세 원인 확인 후 재실행하세요.</div><ul class="parity-drift-list">${signals.map(s => `<li>${safeText(s)}</li>`).join('')}</ul>`;
+  }
+
   function renderFailureCodeStats(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const counts = {};
@@ -1201,6 +1275,7 @@
         lastExecutedRows = final.rows || [];
         renderFailureCodeStats(lastExecutedRows);
         renderRetryStatsPanel(lastExecutedRows, final.retryStats);
+        renderParityDriftPanel(final);
         applyFailureCodeFilter();
         const s = final.summary || {};
         const c = final.coverage || {};
@@ -1211,12 +1286,14 @@
         summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
         renderFailureCodeStats([]);
         renderRetryStatsPanel([], null);
+        renderParityDriftPanel(final);
         renderExecutedRowsTable([]);
       }
     } catch (e) {
       summaryEl.textContent = '실행 상태: 실패 (예외)';
       renderFailureCodeStats([]);
       renderRetryStatsPanel([], null);
+      renderParityDriftPanel(null);
       renderExecutedRowsTable([]);
     } finally {
       setButtonBusy('execBtn', false);
