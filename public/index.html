@@ -86,6 +86,7 @@
     .parity-drift-panel { margin-top:8px; border:1px solid rgba(245,158,11,.45); border-radius:10px; background:rgba(245,158,11,.10); padding:10px; }
     .parity-drift-list { margin:6px 0 0 0; padding-left:18px; }
     .parity-drift-list li { margin:4px 0; font-size:13px; color:#fde68a; }
+    .ops-guard { margin-top:8px; border:1px solid rgba(245,158,11,.45); border-radius:10px; background:rgba(245,158,11,.10); padding:10px; color:#fde68a; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -191,6 +192,7 @@
         </div>
         <div id="autoProgress" class="muted" style="margin-top:8px">자동생성 상태: 대기</div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
+        <div id="opsBackendGuard" class="ops-guard advanced-only" style="display:none"></div>
         <div class="row advanced-only" style="margin-top:6px">
           <span class="muted">실패코드 필터</span>
           <select id="failCodeFilter" style="min-width:180px"><option value="ALL">ALL</option></select>
@@ -1238,12 +1240,41 @@
     }
   }
 
+  function showOpsBackendGuard(message) {
+    const box = document.getElementById('opsBackendGuard');
+    if (!box) return;
+    box.style.display = 'block';
+    box.textContent = message || '백엔드 연결이 불안정합니다. 실행은 중단되었지만 화면 상태는 유지됩니다. API 주소/연결 테스트를 확인한 뒤 다시 실행하세요.';
+  }
+
+  function hideOpsBackendGuard() {
+    const box = document.getElementById('opsBackendGuard');
+    if (!box) return;
+    box.style.display = 'none';
+    box.textContent = '';
+  }
+
+  function isBackendUnavailableError(error) {
+    const msg = String(error?.message || error || '').toLowerCase();
+    return (
+      msg.includes('failed to fetch') ||
+      msg.includes('network') ||
+      msg.includes('타임아웃') ||
+      msg.includes('timeout') ||
+      msg.includes('json 대신 html') ||
+      msg.includes('api가 json') ||
+      msg.includes('abort') ||
+      msg.includes('connection')
+    );
+  }
+
   async function onExecuteChecklist() {
     const rows = parseTSV(lastChecklistTSV || document.getElementById('checkOut').textContent || '');
     if (!rows.length) return alert('먼저 체크리스트를 생성하세요.');
     setButtonBusy('execBtn', true, '실행중...');
     const summaryEl = document.getElementById('execSummary');
     summaryEl.textContent = '실행 상태: 체크리스트 실행 요청 중...';
+    hideOpsBackendGuard();
     try {
       const exhaustive = !!document.getElementById('execExhaustive').checked;
       const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
@@ -1290,6 +1321,9 @@
         renderExecutedRowsTable([]);
       }
     } catch (e) {
+      if (isBackendUnavailableError(e)) {
+        showOpsBackendGuard('백엔드 연결이 불안정해 실행을 완료하지 못했습니다. (non-blocking)\nAPI 주소/연결 테스트를 확인한 뒤 다시 시도하세요.');
+      }
       summaryEl.textContent = '실행 상태: 실패 (예외)';
       renderFailureCodeStats([]);
       renderRetryStatsPanel([], null);
