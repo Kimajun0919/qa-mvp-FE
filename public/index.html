@@ -95,6 +95,9 @@
       <span class="muted">OpenAI 인증</span>
       <select id="openaiAuthMode"><option value="env" selected>env 사용</option><option value="apiKey">API Key 직접입력</option><option value="oauthToken">OAuth Token 입력</option></select>
       <input id="openaiCredential" type="password" placeholder="API Key 또는 OAuth Token" style="min-width:280px" />
+      <button id="oauthLoginBtn" class="btn secondary">OpenAI 로그인</button>
+      <button id="oauthStatusBtn" class="btn secondary">OAuth 상태</button>
+      <button id="oauthLogoutBtn" class="btn secondary">OAuth 로그아웃</button>
     </div>
 
     <div class="grid">
@@ -641,6 +644,35 @@
     document.getElementById('rawOut').textContent = JSON.stringify({ filteredBy: code, count: rows.length, rows }, null, 2);
   }
 
+  async function onOauthLogin() {
+    try {
+      const j = await postJson('/api/llm/oauth/start', { provider: 'openai' }, 30000, 0);
+      if (!j.ok || !j.authUrl) return alert('OAuth 시작 실패');
+      window.open(j.authUrl, '_blank');
+      alert('로그인 창에서 인증 완료 후, "OAuth 상태" 버튼으로 연결 확인하세요.');
+    } catch (e) {
+      alert('OAuth 시작 실패: ' + (e?.message || e));
+    }
+  }
+
+  async function onOauthStatus() {
+    try {
+      const j = await getJson('/api/llm/oauth/status?provider=openai', 30000);
+      alert(j.connected ? `OAuth 연결됨 (${j.mode || 'oauth'})` : 'OAuth 미연결');
+    } catch (e) {
+      alert('OAuth 상태 조회 실패: ' + (e?.message || e));
+    }
+  }
+
+  async function onOauthLogout() {
+    try {
+      const j = await postJson('/api/llm/oauth/logout', { provider: 'openai' }, 30000, 0);
+      if (j.ok) alert('OAuth 로그아웃 완료');
+    } catch (e) {
+      alert('OAuth 로그아웃 실패: ' + (e?.message || e));
+    }
+  }
+
   async function onLoadTemplates() {
     try {
       setButtonBusy('loadTemplatesBtn', true, '불러오는중...');
@@ -882,6 +914,9 @@
   document.getElementById('flowsRunBtn').addEventListener('click', onFlowsRun);
   document.getElementById('flowsFinalizeBtn').addEventListener('click', onFlowsFinalize);
   document.getElementById('testApiBtn').addEventListener('click', testApiConnection);
+  document.getElementById('oauthLoginBtn').addEventListener('click', onOauthLogin);
+  document.getElementById('oauthStatusBtn').addEventListener('click', onOauthStatus);
+  document.getElementById('oauthLogoutBtn').addEventListener('click', onOauthLogout);
   document.getElementById('modeSimpleBtn').addEventListener('click', () => setUIMode('simple'));
   document.getElementById('modeAdvancedBtn').addEventListener('click', () => setUIMode('advanced'));
 
