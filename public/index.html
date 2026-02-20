@@ -160,6 +160,11 @@
         </div>
         <div id="autoProgress" class="muted" style="margin-top:8px">자동생성 상태: 대기</div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
+        <div class="row advanced-only" style="margin-top:6px">
+          <span class="muted">실패코드 필터</span>
+          <select id="failCodeFilter" style="min-width:180px"><option value="ALL">ALL</option></select>
+        </div>
+        <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
         <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
         <div id="oneClickProgress" class="advisory-box" style="margin-top:8px; display:none"></div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
@@ -589,6 +594,36 @@
     });
   }
 
+  function renderFailureCodeStats(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const counts = {};
+    list.forEach(r => {
+      const code = String(r['실패코드'] || '').trim();
+      if (!code || code === 'OK') return;
+      counts[code] = (counts[code] || 0) + 1;
+    });
+
+    const statEl = document.getElementById('failCodeStats');
+    const sel = document.getElementById('failCodeFilter');
+    sel.innerHTML = '<option value="ALL">ALL</option>';
+    Object.keys(counts).sort((a,b)=>(counts[b]-counts[a])).forEach(code => {
+      const op = document.createElement('option');
+      op.value = code;
+      op.textContent = `${code} (${counts[code]})`;
+      sel.appendChild(op);
+    });
+
+    const chips = Object.keys(counts).sort((a,b)=>(counts[b]-counts[a])).map(code => `${code}:${counts[code]}`);
+    statEl.textContent = chips.length ? `실패코드 집계: ${chips.join(' | ')}` : '실패코드 집계: 없음';
+  }
+
+  function applyFailureCodeFilter() {
+    const code = (document.getElementById('failCodeFilter')?.value || 'ALL');
+    if (!Array.isArray(lastExecutedRows) || !lastExecutedRows.length) return;
+    const rows = (code === 'ALL') ? lastExecutedRows : lastExecutedRows.filter(r => String(r['실패코드'] || '') === code);
+    document.getElementById('rawOut').textContent = JSON.stringify({ filteredBy: code, count: rows.length, rows }, null, 2);
+  }
+
   async function onLoadTemplates() {
     try {
       setButtonBusy('loadTemplatesBtn', true, '불러오는중...');
@@ -780,6 +815,7 @@
       document.getElementById('rawOut').textContent = JSON.stringify(final, null, 2);
       if (final.ok) {
         lastExecutedRows = final.rows || [];
+        renderFailureCodeStats(lastExecutedRows);
         const s = final.summary || {};
         const c = final.coverage || {};
         const un = c.untestedEstimate || {};
@@ -822,6 +858,7 @@
   document.getElementById('loadTemplatesBtn').addEventListener('click', onLoadTemplates);
   document.getElementById('runTransitionBtn').addEventListener('click', onRunTransition);
   document.getElementById('conditionMatrixBtn').addEventListener('click', onConditionMatrix);
+  document.getElementById('failCodeFilter').addEventListener('change', applyFailureCodeFilter);
   document.getElementById('analysisReloadBtn').addEventListener('click', onAnalysisReload);
   document.getElementById('flowMapBtn').addEventListener('click', onFlowMap);
   document.getElementById('structureMapBtn').addEventListener('click', onStructureMap);
