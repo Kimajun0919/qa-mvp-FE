@@ -52,6 +52,10 @@
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     th, td { border-bottom: 1px solid #233053; padding: 8px; text-align: left; font-size: 13px; }
     th { color: var(--muted); font-weight: 600; }
+    .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:10px; margin-top:8px; }
+    .mini { font-size: 12px; color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .code-chip { display:inline-block; padding:2px 6px; border-radius:999px; background:#1d2848; border:1px solid #2e3f68; font-size:11px; }
     .tabs { display: flex; gap: 8px; margin-bottom: 10px; }
     .tab { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; color: var(--muted); }
     .tab.active { color: var(--text); background: #182447; }
@@ -173,6 +177,17 @@
           <select id="failCodeFilter" style="min-width:180px"><option value="ALL">ALL</option></select>
         </div>
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
+        <div id="execEvidenceHint" class="mini" style="margin-top:6px">실행 증거 상세: 대기</div>
+        <div class="table-wrap" id="execRowsWrap" style="display:none; max-height:280px;">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>결과</th><th>화면/구분</th><th>테스트시나리오</th><th>실패코드</th><th>실패사유</th><th>증거</th><th>실행메타</th>
+              </tr>
+            </thead>
+            <tbody id="execRowsBody"></tbody>
+          </table>
+        </div>
         <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
         <div id="oneClickProgress" class="advisory-box" style="margin-top:8px; display:none"></div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
@@ -614,6 +629,61 @@
     });
   }
 
+  function safeText(v) {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    try { return JSON.stringify(v); } catch (_) { return String(v); }
+  }
+
+  function pickMeta(meta, key) {
+    if (!meta || typeof meta !== 'object') return '';
+    return meta[key] == null ? '' : String(meta[key]);
+  }
+
+  function renderExecutedRowsTable(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const body = document.getElementById('execRowsBody');
+    const wrap = document.getElementById('execRowsWrap');
+    const hint = document.getElementById('execEvidenceHint');
+    body.innerHTML = '';
+
+    if (!list.length) {
+      wrap.style.display = 'none';
+      hint.textContent = '실행 증거 상세: 대기';
+      return;
+    }
+
+    wrap.style.display = 'block';
+    hint.textContent = `실행 증거 상세: ${list.length}건`;
+
+    list.forEach((r, idx) => {
+      const meta = (r['실행메타'] && typeof r['실행메타'] === 'object') ? r['실행메타'] : {};
+      const stat = (r['요소통계'] && typeof r['요소통계'] === 'object') ? r['요소통계'] : {};
+      const result = String(r['실행결과'] || '-');
+      const code = String(r['실패코드'] || '-');
+      const evidence = safeText(r['증거'] || '').slice(0, 180);
+      const metaLine = [
+        pickMeta(meta, 'scenarioKind'),
+        pickMeta(meta, 'urlAfter') || pickMeta(meta, 'urlBefore'),
+        pickMeta(meta, 'durationMs') ? `${pickMeta(meta, 'durationMs')}ms` : ''
+      ].filter(Boolean).join(' · ');
+      const statLine = Object.keys(stat).length ? Object.entries(stat).map(([k,v]) => `${k}:${v}`).join(' | ') : '';
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mini">${idx + 1}</td>
+        <td><span class="badge ${result === 'PASS' ? 'PASS' : (result === 'FAIL' ? 'FAIL' : '')}">${result}</span></td>
+        <td><div>${safeText(r['화면'] || '-')}</div><div class="mini">${safeText(r['구분'] || '-')}</div></td>
+        <td>${safeText(r['테스트시나리오'] || '-')}</td>
+        <td><span class="code-chip mono">${code}</span></td>
+        <td>${safeText(r['실패사유'] || '-')}</td>
+        <td class="mini mono">${evidence || '-'}</td>
+        <td><div class="mini">${metaLine || '-'}</div><div class="mini mono">${statLine || ''}</div></td>
+      `;
+      body.appendChild(tr);
+    });
+  }
+
   function renderFailureCodeStats(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const counts = {};
@@ -639,9 +709,13 @@
 
   function applyFailureCodeFilter() {
     const code = (document.getElementById('failCodeFilter')?.value || 'ALL');
-    if (!Array.isArray(lastExecutedRows) || !lastExecutedRows.length) return;
+    if (!Array.isArray(lastExecutedRows) || !lastExecutedRows.length) {
+      renderExecutedRowsTable([]);
+      return;
+    }
     const rows = (code === 'ALL') ? lastExecutedRows : lastExecutedRows.filter(r => String(r['실패코드'] || '') === code);
     document.getElementById('rawOut').textContent = JSON.stringify({ filteredBy: code, count: rows.length, rows }, null, 2);
+    renderExecutedRowsTable(rows);
   }
 
   async function onOauthLogin() {
@@ -869,6 +943,7 @@
       if (final.ok) {
         lastExecutedRows = final.rows || [];
         renderFailureCodeStats(lastExecutedRows);
+        applyFailureCodeFilter();
         const s = final.summary || {};
         const c = final.coverage || {};
         const un = c.untestedEstimate || {};
@@ -876,9 +951,11 @@
         summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0} | depth ${exhaustiveDepth}, budget ${exhaustiveBudgetMs}ms, risky ${allowRiskyActions?'on':'off'}`;
       } else {
         summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
+        renderExecutedRowsTable([]);
       }
     } catch (e) {
       summaryEl.textContent = '실행 상태: 실패 (예외)';
+      renderExecutedRowsTable([]);
     } finally {
       setButtonBusy('execBtn', false);
     }
