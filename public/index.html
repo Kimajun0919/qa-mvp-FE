@@ -437,6 +437,17 @@
     throw new Error('네트워크/타임아웃 오류: ' + (lastErr?.message || lastErr));
   }
 
+  async function getJson(path, timeoutMs = 30000) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(apiUrl(path), { signal: ctl.signal });
+      return await asJson(res);
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   function stageLog(msg, ok = null) {
     const box = document.getElementById('oneClickProgress');
     box.style.display = 'block';
@@ -743,26 +754,39 @@
     if (!rows.length) return alert('먼저 체크리스트를 생성하세요.');
     setButtonBusy('execBtn', true, '실행중...');
     const summaryEl = document.getElementById('execSummary');
-    summaryEl.textContent = '실행 상태: 체크리스트 실행 중...';
+    summaryEl.textContent = '실행 상태: 체크리스트 실행 요청 중...';
     try {
       const exhaustive = !!document.getElementById('execExhaustive').checked;
       const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
       const exhaustiveBudgetMs = Math.max(1000, parseInt(document.getElementById('exhaustiveBudgetMs')?.value || '20000', 10) || 20000);
       const allowRiskyActions = !!document.getElementById('allowRiskyActions')?.checked;
       const body = { projectName: 'QA 실행 결과', rows, exhaustive, exhaustiveClicks: 12, exhaustiveInputs: 12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions, ...getAuthOptions() };
-      const j = await (await fetch(apiUrl('/api/checklist/execute'), {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
-      })).json();
-      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
-      if (j.ok) {
-        lastExecutedRows = j.rows || [];
-        const s = j.summary || {};
-        const c = j.coverage || {};
+
+      const enq = await postJson('/api/checklist/execute/async', body, 30000, 1);
+      const jobId = enq.jobId;
+      if (!enq.ok || !jobId) throw new Error('async 실행 요청 실패');
+
+      let final = null;
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const st = await getJson(`/api/checklist/execute/status/${jobId}`, 30000);
+        summaryEl.textContent = `실행 상태: ${st.status || 'running'} (job: ${jobId})`;
+        if (st.status === 'done' || st.status === 'error') {
+          final = st;
+          break;
+        }
+      }
+      if (!final) throw new Error('실행 타임아웃(폴링)');
+      document.getElementById('rawOut').textContent = JSON.stringify(final, null, 2);
+      if (final.ok) {
+        lastExecutedRows = final.rows || [];
+        const s = final.summary || {};
+        const c = final.coverage || {};
         const un = c.untestedEstimate || {};
         const ex = (c.exhaustive || {}).probeSummary || {};
         summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0} | depth ${exhaustiveDepth}, budget ${exhaustiveBudgetMs}ms, risky ${allowRiskyActions?'on':'off'}`;
       } else {
-        summaryEl.textContent = '실행 상태: 실패';
+        summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
       }
     } catch (e) {
       summaryEl.textContent = '실행 상태: 실패 (예외)';
