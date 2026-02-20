@@ -79,6 +79,10 @@
     .summary-chip { font-size:12px; padding:4px 8px; border:1px solid #2e3f68; border-radius:999px; background:#121c3a; color:#c6d5fb; }
     .checklist-box { margin-top:10px; border:1px dashed #2e3f68; border-radius:8px; padding:8px; background:#0b1329; }
     .checklist-copy { margin-left:auto; }
+    .retry-panel { margin-top:8px; border:1px solid var(--line); border-radius:10px; background:#0f162c; padding:10px; }
+    .retry-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .retry-list { margin:6px 0 0 0; padding-left:18px; }
+    .retry-list li { margin:4px 0; font-size:13px; color:var(--muted); }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -189,6 +193,7 @@
           <select id="failCodeFilter" style="min-width:180px"><option value="ALL">ALL</option></select>
         </div>
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
+        <div id="retryStatsPanel" class="retry-panel advanced-only" style="display:none"></div>
         <div id="remediationHints" class="remediation-box advanced-only" style="display:none"></div>
         <div id="execEvidenceHint" class="mini" style="margin-top:6px">실행 증거 상세: 대기</div>
         <div class="table-wrap" id="execRowsWrap" style="display:none; max-height:280px;">
@@ -872,6 +877,69 @@
     });
   }
 
+  function normalizeRetryClass(raw) {
+    const v = String(raw || '').trim();
+    return v || 'UNCLASSIFIED';
+  }
+
+  function rowRetryClass(row) {
+    const meta = (row && typeof row['실행메타'] === 'object') ? row['실행메타'] : {};
+    return normalizeRetryClass(
+      row?.retryClass || row?.['재시도분류'] || row?.['retryClass'] ||
+      meta.retryClass || meta.retry_class || meta.retryCategory ||
+      meta['재시도분류'] || meta['retry_class']
+    );
+  }
+
+  function renderRetryStatsPanel(rows, retryStats) {
+    const box = document.getElementById('retryStatsPanel');
+    if (!box) return;
+
+    const statsObj = (retryStats && typeof retryStats === 'object') ? retryStats : {};
+    const topStats = Object.entries(statsObj).filter(([k]) => !['byClass', 'classes', 'classSummary'].includes(k));
+    const classStatsRaw = statsObj.byClass || statsObj.classes || statsObj.classSummary || {};
+
+    const classCounts = {};
+    if (classStatsRaw && typeof classStatsRaw === 'object') {
+      Object.entries(classStatsRaw).forEach(([k, v]) => {
+        const n = Number(v);
+        classCounts[k] = Number.isFinite(n) ? n : (Number(v?.count) || 0);
+      });
+    }
+
+    const list = Array.isArray(rows) ? rows : [];
+    list.forEach((r) => {
+      const cls = rowRetryClass(r);
+      classCounts[cls] = (classCounts[cls] || 0) + 1;
+    });
+
+    const classEntries = Object.entries(classCounts).filter(([,v]) => Number(v) > 0).sort((a,b)=>Number(b[1])-Number(a[1]));
+    const hasData = topStats.length || classEntries.length;
+    if (!hasData) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const topRows = topStats.map(([k,v]) => `<li><span class="code-chip mono">${safeText(k)}</span> ${safeText(v)}</li>`).join('');
+    const classRows = classEntries.map(([k,v]) => `<li><span class="code-chip mono">${safeText(k)}</span> ${safeText(v)}건</li>`).join('');
+
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="font-weight:700">재시도 통계 요약</div>
+      <div class="retry-grid">
+        <div>
+          <div class="mini" style="margin-top:6px">execute.retryStats</div>
+          <ul class="retry-list">${topRows || '<li>데이터 없음</li>'}</ul>
+        </div>
+        <div>
+          <div class="mini" style="margin-top:6px">행 단위 재시도 분류 요약</div>
+          <ul class="retry-list">${classRows || '<li>분류 없음</li>'}</ul>
+        </div>
+      </div>
+    `;
+  }
+
   function renderFailureCodeStats(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const counts = {};
@@ -1132,6 +1200,7 @@
       if (final.ok) {
         lastExecutedRows = final.rows || [];
         renderFailureCodeStats(lastExecutedRows);
+        renderRetryStatsPanel(lastExecutedRows, final.retryStats);
         applyFailureCodeFilter();
         const s = final.summary || {};
         const c = final.coverage || {};
@@ -1141,11 +1210,13 @@
       } else {
         summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
         renderFailureCodeStats([]);
+        renderRetryStatsPanel([], null);
         renderExecutedRowsTable([]);
       }
     } catch (e) {
       summaryEl.textContent = '실행 상태: 실패 (예외)';
       renderFailureCodeStats([]);
+      renderRetryStatsPanel([], null);
       renderExecutedRowsTable([]);
     } finally {
       setButtonBusy('execBtn', false);
