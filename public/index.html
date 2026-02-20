@@ -81,7 +81,7 @@
 
     <div class="topbar">
       <input id="baseUrlInput" type="text" placeholder="사용자 페이지 URL (예: https://user.example.com)" />
-      <select id="llmProvider" class="advanced-only"><option value="ollama" selected>ollama (로컬)</option><option value="openai">openai</option></select>
+      <input id="llmProviders" class="advanced-only" type="text" placeholder="LLM 우선순위 (예: ollama,openai)" value="ollama,openai" />
       <input id="llmModel" class="advanced-only" type="text" placeholder="모델명" value="qwen2.5:0.5b" />
       <div class="row" style="justify-content:flex-end">
         <button id="setApiBaseBtn" class="btn secondary advanced-only">API 주소</button>
@@ -91,6 +91,11 @@
       </div>
     </div>
     <div class="muted" id="apiBaseHint" style="margin-top:8px">API: same-origin (현재 도메인)</div>
+    <div class="row advanced-only" style="margin-top:8px">
+      <span class="muted">OpenAI 인증</span>
+      <select id="openaiAuthMode"><option value="env" selected>env 사용</option><option value="apiKey">API Key 직접입력</option><option value="oauthToken">OAuth Token 입력</option></select>
+      <input id="openaiCredential" type="password" placeholder="API Key 또는 OAuth Token" style="min-width:280px" />
+    </div>
 
     <div class="grid">
       <section class="card">
@@ -290,9 +295,18 @@
   };
 
   function getLLMOptions() {
+    const providersRaw = (document.getElementById('llmProviders')?.value || 'ollama').trim();
+    const providers = providersRaw.split(',').map(s => s.trim()).filter(Boolean);
+    const llmProvider = providers.length ? providers.join(',') : 'ollama';
+    const mode = (document.getElementById('openaiAuthMode')?.value || 'env').trim();
+    const cred = (document.getElementById('openaiCredential')?.value || '').trim();
+    const openaiAuth = (mode === 'apiKey') ? { apiKey: cred } : (mode === 'oauthToken' ? { oauthToken: cred } : {});
     return {
-      llmProvider: document.getElementById('llmProvider').value,
+      llmProvider,
+      llmProviders: providers,
       llmModel: (document.getElementById('llmModel').value || '').trim(),
+      llmRouting: { providers, auth: { openai: { mode, ...openaiAuth } } },
+      llmAuth: { openai: { mode, ...openaiAuth } },
     };
   }
 
@@ -881,15 +895,6 @@
     refreshApiHint();
   });
 
-  document.getElementById('llmProvider').addEventListener('change', (e) => {
-    const provider = e.target.value;
-    const modelInput = document.getElementById('llmModel');
-    if (!modelInput.value.trim() || modelInput.value === DEFAULT_MODEL.openai || modelInput.value === DEFAULT_MODEL.ollama) {
-      modelInput.value = DEFAULT_MODEL[provider] || '';
-    }
-    modelInput.placeholder = DEFAULT_MODEL[provider] || 'model';
-  });
-
   document.getElementById('openHtml').addEventListener('click', () => {
     if (!lastReportPath) return alert('먼저 실행하세요.');
     window.open(fileUrl(lastReportPath), '_blank');
@@ -916,10 +921,8 @@
   {
     const mode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
     setUIMode(mode);
-    const provider = document.getElementById('llmProvider').value;
     const modelInput = document.getElementById('llmModel');
-    modelInput.placeholder = DEFAULT_MODEL[provider] || 'model';
-    if (!modelInput.value.trim()) modelInput.value = DEFAULT_MODEL[provider] || '';
+    if (!modelInput.value.trim()) modelInput.value = DEFAULT_MODEL.ollama;
     refreshApiHint();
     setTimeout(() => { testApiConnection(true).catch(() => {}); }, 200);
     setTimeout(() => { onLoadTemplates().catch(() => {}); }, 300);
