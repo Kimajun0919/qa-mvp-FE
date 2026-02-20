@@ -854,7 +854,11 @@
       for (let i = 0; i < 120; i++) {
         await new Promise(r => setTimeout(r, 1500));
         const st = await getJson(`/api/checklist/execute/status/${jobId}`, 30000);
-        summaryEl.textContent = `실행 상태: ${st.status || 'running'} (job: ${jobId})`;
+        const pg = st.progress || {};
+        const pct = (pg.percent != null) ? `${pg.percent}%` : '-';
+        const done = (pg.doneRows != null) ? pg.doneRows : '-';
+        const total = (pg.totalRows != null) ? pg.totalRows : '-';
+        summaryEl.textContent = `실행 상태: ${st.status || 'running'} (job: ${jobId}) | 진행 ${done}/${total} (${pct})`;
         if (st.status === 'done' || st.status === 'error') {
           final = st;
           break;
