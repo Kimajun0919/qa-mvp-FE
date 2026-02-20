@@ -1,0 +1,17 @@
+{
+  "siteKey": "openclaw-docs",
+  "matchHosts": ["docs.openclaw.ai"],
+  "roles": ["guest", "user", "editor", "admin"],
+  "entities": [
+    {
+      "entity": "DOC_CONTENT",
+      "adminKeywords": ["docs", "article", "page", "md", "content"],
+      "userKeywords": ["docs", "guide", "reference", "api"]
+    },
+    {
+      "entity": "NAV",
+      "adminKeywords": ["menu", "nav", "sidebar", "category"],
+      "userKeywords": ["menu", "nav", "sidebar", "category"]
+    }
+  ]
+}

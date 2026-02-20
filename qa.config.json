@@ -1,0 +1,16 @@
+{
+  "baseUrl": "https://korea-university.hk-test.co.kr",
+  "scheduleCron": "*/15 * * * *",
+  "parallel": 2,
+  "headless": true,
+  "retentionDays": 90,
+  "requireLogin": true,
+  "login": {
+    "path": "/login",
+    "idTestId": "login-id",
+    "pwTestId": "login-password",
+    "submitTestId": "login-submit",
+    "idEnv": "QA_LOGIN_ID",
+    "pwEnv": "QA_LOGIN_PW"
+  }
+}

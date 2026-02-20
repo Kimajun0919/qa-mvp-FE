@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QA DSL v1",
+  "type": "object",
+  "required": ["screen", "path", "tests"],
+  "properties": {
+    "screen": { "type": "string" },
+    "path": { "type": "string" },
+    "preconditions": {
+      "type": "object",
+      "properties": {
+        "loginRequired": { "type": "boolean" },
+        "role": { "type": "string" }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "type", "steps", "expect", "severity"],
+        "properties": {
+          "id": { "type": "string" },
+          "category": { "type": "string" },
+          "type": { "type": "string" },
+          "steps": { "type": "array", "items": { "type": "object" } },
+          "expect": { "type": "object" },
+          "severity": { "enum": ["LOW", "MEDIUM", "HIGH"] },
+          "evidence": { "type": "object" }
+        }
+      }
+    }
+  }
+}

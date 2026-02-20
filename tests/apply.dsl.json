@@ -1,0 +1,20 @@
+{
+  "screen": "apply",
+  "path": "/apply",
+  "preconditions": { "loginRequired": true },
+  "tests": [
+    {
+      "id": "apply-submit-disabled-initial",
+      "category": "입력폼",
+      "type": "button_disabled",
+      "steps": [
+        { "goto": "/apply" }
+      ],
+      "expect": {
+        "elementDisabled": "apply-submit"
+      },
+      "severity": "HIGH",
+      "evidence": { "screenshotOnFail": true }
+    }
+  ]
+}

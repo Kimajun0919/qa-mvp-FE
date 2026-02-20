@@ -1,0 +1,20 @@
+{
+  "screen": "home",
+  "path": "/",
+  "preconditions": { "loginRequired": true },
+  "tests": [
+    {
+      "id": "home-main-banner-visible",
+      "category": "기능",
+      "type": "element_present",
+      "steps": [
+        { "goto": "/" }
+      ],
+      "expect": {
+        "elementVisible": "main-banner"
+      },
+      "severity": "MEDIUM",
+      "evidence": { "screenshotOnFail": true }
+    }
+  ]
+}

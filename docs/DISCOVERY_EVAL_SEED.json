@@ -1,0 +1,31 @@
+{
+  "policy": "accuracy-first",
+  "sampleSize": 5,
+  "sites": [
+    {
+      "url": "https://www.netlify.com",
+      "expectedServiceType": "LANDING",
+      "notes": "B2B landing/docs mix"
+    },
+    {
+      "url": "https://github.com",
+      "expectedServiceType": "MIXED",
+      "notes": "auth + docs + marketing"
+    },
+    {
+      "url": "https://vercel.com",
+      "expectedServiceType": "LANDING",
+      "notes": "developer product site"
+    },
+    {
+      "url": "https://www.notion.so",
+      "expectedServiceType": "LANDING",
+      "notes": "landing + sign-up"
+    },
+    {
+      "url": "https://www.shopify.com",
+      "expectedServiceType": "LANDING",
+      "notes": "commerce platform landing"
+    }
+  ]
+}

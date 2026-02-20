@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: qa-mvp-api
+    env: node
+    plan: starter
+    buildCommand: npm ci && npx playwright install chromium
+    startCommand: npm run web
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: QA_LLM_PROVIDER
+        value: openai
+      - key: QA_OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: QA_WEB_ORIGIN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

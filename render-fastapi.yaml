@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: qa-mvp-fastapi
+    env: python
+    plan: starter
+    rootDir: backend-fastapi
+    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: QA_NODE_API_BASE
+        sync: false
+      - key: QA_WEB_ORIGIN
+        sync: false
+      - key: QA_API_TIMEOUT_SEC
+        value: 180
+      - key: QA_HTTP_VERIFY_TLS
+        value: true

@@ -1,0 +1,32 @@
+{
+  "siteKey": "default",
+  "matchHosts": ["*"],
+  "roles": ["guest", "user", "editor", "admin"],
+  "entities": [
+    {
+      "entity": "CONTENT",
+      "adminKeywords": ["post", "article", "content", "notice", "blog", "게시", "콘텐츠"],
+      "userKeywords": ["blog", "news", "notice", "article", "게시", "공지"]
+    },
+    {
+      "entity": "PRODUCT",
+      "adminKeywords": ["product", "item", "catalog", "상품"],
+      "userKeywords": ["product", "shop", "store", "item", "상품"]
+    },
+    {
+      "entity": "BANNER",
+      "adminKeywords": ["banner", "hero", "popup", "배너"],
+      "userKeywords": ["home", "main", "landing", "배너"]
+    },
+    {
+      "entity": "CATEGORY",
+      "adminKeywords": ["category", "menu", "taxonomy", "카테고리"],
+      "userKeywords": ["category", "menu", "browse", "카테고리"]
+    },
+    {
+      "entity": "USER_ROLE",
+      "adminKeywords": ["user", "member", "role", "permission", "권한", "사용자"],
+      "userKeywords": ["mypage", "profile", "account", "회원", "프로필"]
+    }
+  ]
+}

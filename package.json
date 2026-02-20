@@ -1,0 +1,39 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "run-once": "node scripts/preflight.mjs && tsx src/cli.ts run-once",
+    "daemon": "node scripts/preflight.mjs && tsx src/cli.ts daemon",
+    "report": "node scripts/preflight.mjs && tsx src/cli.ts report",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "web": "node scripts/preflight.mjs && tsx src/web/server.ts",
+    "eval:discovery": "node scripts/preflight.mjs && tsx src/discovery/eval.ts",
+    "ops:check": "bash ./scripts/ops_check.sh",
+    "ops:deep": "bash ./scripts/deep_check.sh",
+    "postinstall": "npm rebuild better-sqlite3 --build-from-source || true"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "express": "^5.2.1",
+    "node-cron": "^4.2.1",
+    "playwright": "^1.58.2",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.2.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
