@@ -72,6 +72,9 @@
     .artifact-links { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
     .artifact-link { font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #2e3f68; color:#c6d5fb; text-decoration:none; }
     .artifact-link.disabled { opacity:.5; pointer-events:none; }
+    .remediation-box { margin-top:8px; border:1px solid var(--line); border-radius:10px; background:#0f162c; padding:10px; }
+    .remediation-item { border:1px solid #2e3f68; border-radius:8px; padding:8px; margin-top:8px; }
+    .remediation-item:first-child { margin-top:0; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -182,6 +185,7 @@
           <select id="failCodeFilter" style="min-width:180px"><option value="ALL">ALL</option></select>
         </div>
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
+        <div id="remediationHints" class="remediation-box advanced-only" style="display:none"></div>
         <div id="execEvidenceHint" class="mini" style="margin-top:6px">실행 증거 상세: 대기</div>
         <div class="table-wrap" id="execRowsWrap" style="display:none; max-height:280px;">
           <table>
@@ -718,6 +722,60 @@
     return meta[key] == null ? '' : String(meta[key]);
   }
 
+  const FAILURE_REMEDIATION_HINTS = {
+    ELEMENT_NOT_FOUND: '선택자(data-testid)와 UI 텍스트가 최신 화면과 맞는지 확인하고 체크리스트 시나리오를 갱신하세요.',
+    ELEMENT_NOT_VISIBLE: '가시성 조건(탭/아코디언/모달 오픈)이 선행되어야 하는지 점검하고 필요한 선행 step을 추가하세요.',
+    CLICK_FAILED: '클릭 대상이 overlay/disabled 상태인지 확인하고, 안정화 대기 또는 대체 selector를 지정하세요.',
+    TYPE_FAILED: '입력 필드가 readonly/format-mask인지 확인하고 유효한 샘플 입력값으로 교체하세요.',
+    ASSERTION_FAILED: '기대 결과 문구/URL/상태값 정의를 실제 정책과 맞추고 허용 오차(시간/문구)를 조정하세요.',
+    TIMEOUT: '응답 지연 구간입니다. 백엔드 응답 시간과 로딩 인디케이터 종료 시점을 점검하고 timeout/재시도를 조정하세요.',
+    NETWORK: '실패한 API/정적 리소스 경로를 확인하고 CORS, 인증 토큰, 배포 경로 설정을 점검하세요.',
+    HTTP_4XX: '권한/요청 파라미터 문제 가능성이 큽니다. 인증 상태와 요청 payload를 재검증하세요.',
+    HTTP_5XX: '서버 오류입니다. 실패 API 로그를 확인해 백엔드 예외를 우선 조치하세요.',
+    AUTH_REQUIRED: '테스트 계정 또는 로그인 세션이 필요합니다. 관리자/사용자 계정 설정 후 재실행하세요.',
+    BLOCKED: '선행 조건 부족(권한/데이터/환경)입니다. precondition을 체크리스트에 명시하세요.',
+  };
+
+  function remediationHintFor(code) {
+    const key = String(code || '').trim().toUpperCase();
+    if (!key || key === 'OK') return '';
+    if (FAILURE_REMEDIATION_HINTS[key]) return FAILURE_REMEDIATION_HINTS[key];
+    if (key.includes('TIMEOUT')) return FAILURE_REMEDIATION_HINTS.TIMEOUT;
+    if (key.includes('NOT_FOUND')) return FAILURE_REMEDIATION_HINTS.ELEMENT_NOT_FOUND;
+    if (key.includes('NOT_VISIBLE')) return FAILURE_REMEDIATION_HINTS.ELEMENT_NOT_VISIBLE;
+    if (key.includes('AUTH')) return FAILURE_REMEDIATION_HINTS.AUTH_REQUIRED;
+    if (key.includes('NETWORK') || key.includes('REQUEST') || key.includes('RESOURCE')) return FAILURE_REMEDIATION_HINTS.NETWORK;
+    if (key.includes('4XX') || key.includes('HTTP_4')) return FAILURE_REMEDIATION_HINTS.HTTP_4XX;
+    if (key.includes('5XX') || key.includes('HTTP_5')) return FAILURE_REMEDIATION_HINTS.HTTP_5XX;
+    if (key.includes('BLOCK')) return FAILURE_REMEDIATION_HINTS.BLOCKED;
+    return '실패 코드 기준 가이드가 없습니다. raw 로그/증거를 확인해 재현 후 체크리스트를 보강하세요.';
+  }
+
+  function renderRemediationHints(rows) {
+    const box = document.getElementById('remediationHints');
+    const list = Array.isArray(rows) ? rows : [];
+    const counts = {};
+    list.forEach(r => {
+      const code = String(r['실패코드'] || '').trim();
+      if (!code || code === 'OK') return;
+      counts[code] = (counts[code] || 0) + 1;
+    });
+
+    const codes = Object.keys(counts).sort((a,b)=>(counts[b]-counts[a]));
+    if (!codes.length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-weight:700">실패코드별 조치 가이드</div><div class="mini" style="margin-top:4px">execute 결과를 기준으로 우선순위 높은 코드부터 제안합니다.</div>` +
+      codes.map(code => {
+        const hint = remediationHintFor(code);
+        return `<div class="remediation-item"><div><span class="code-chip mono">${code}</span> <span class="mini">${counts[code]}건</span></div><div style="margin-top:4px">${hint}</div></div>`;
+      }).join('');
+  }
+
   function renderExecutedRowsTable(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const body = document.getElementById('execRowsBody');
@@ -783,6 +841,7 @@
 
     const chips = Object.keys(counts).sort((a,b)=>(counts[b]-counts[a])).map(code => `${code}:${counts[code]}`);
     statEl.textContent = chips.length ? `실패코드 집계: ${chips.join(' | ')}` : '실패코드 집계: 없음';
+    renderRemediationHints(list);
   }
 
   function applyFailureCodeFilter() {
@@ -1029,10 +1088,12 @@
         summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0} | depth ${exhaustiveDepth}, budget ${exhaustiveBudgetMs}ms, risky ${allowRiskyActions?'on':'off'}`;
       } else {
         summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
+        renderFailureCodeStats([]);
         renderExecutedRowsTable([]);
       }
     } catch (e) {
       summaryEl.textContent = '실행 상태: 실패 (예외)';
+      renderFailureCodeStats([]);
       renderExecutedRowsTable([]);
     } finally {
       setButtonBusy('execBtn', false);
