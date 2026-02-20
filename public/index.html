@@ -92,6 +92,11 @@
     .parity-drift-list { margin:6px 0 0 0; padding-left:18px; }
     .parity-drift-list li { margin:4px 0; font-size:13px; color:#fde68a; }
     .ops-guard { margin-top:8px; border:1px solid rgba(245,158,11,.45); border-radius:10px; background:rgba(245,158,11,.10); padding:10px; color:#fde68a; }
+    .validation-delta-panel { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .delta-badge-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+    .delta-list { margin:6px 0 0 0; padding-left:18px; }
+    .delta-list li { margin:4px 0; font-size:13px; color:var(--muted); }
+    .drift-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; color:#c6d5fb; margin:4px 6px 0 0; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -205,6 +210,7 @@
         <div id="failCodeStats" class="muted" style="margin-top:6px">실패코드 집계: -</div>
         <div id="retryStatsPanel" class="retry-panel advanced-only" style="display:none"></div>
         <div id="parityDriftPanel" class="parity-drift-panel advanced-only" style="display:none"></div>
+        <div id="validationDeltaPanel" class="validation-delta-panel advanced-only" style="display:none"></div>
         <div id="remediationHints" class="remediation-box advanced-only" style="display:none"></div>
         <div id="execEvidenceHint" class="mini" style="margin-top:6px">실행 증거 상세: 대기</div>
         <div class="table-wrap" id="execRowsWrap" style="display:none; max-height:280px;">
@@ -286,6 +292,7 @@
   let lastTemplates = [];
   let lastAnalysisId = '';
   let lastFlows = [];
+  let lastValidationDelta = null;
   let autopilotDone = ['대기 중'];
   let autopilotActive = ['요청 대기'];
 
@@ -301,6 +308,7 @@
       s.style.opacity = (m === 'simple') ? '1' : '0.7';
       a.style.opacity = (m === 'advanced') ? '1' : '0.7';
     }
+    renderValidationDeltaPanel(lastValidationDelta);
   }
 
   function getApiBase() {
@@ -531,6 +539,7 @@
         const reports = await loadReports(j.reports);
         updateKPIs(reports?.quality, '-');
         renderAdvisories(j.advisories || []);
+        await refreshValidationDelta(j);
       }
     } finally {
       setButtonBusy('analyzeBtn', false);
@@ -662,6 +671,7 @@
 
       stageLog('3/3 완료', true);
       autopilotStepDone('리포트/아티팩트 갱신 완료', []);
+      await refreshValidationDelta(j);
       alert('원클릭 전체 QA 완료');
     } catch (e) {
       autopilotStepDone('실행 실패: ' + (e?.message || e), ['오류 확인 필요']);
@@ -1120,6 +1130,130 @@
     renderExecutedRowsTable(rows);
   }
 
+  function firstObj(...items) {
+    for (const item of items) {
+      if (item && typeof item === 'object') return item;
+    }
+    return null;
+  }
+
+  function toNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function normalizeValidationDelta(payload) {
+    const root = firstObj(payload, {});
+    const candidateRoots = [
+      root?.latestValidationDelta,
+      root?.validationDelta,
+      root?.validation?.delta,
+      root?.validation?.latestDelta,
+      root?.delta,
+      root?.latestDelta,
+    ].filter(Boolean);
+
+    const source = firstObj(...candidateRoots) || root;
+    const flipsRaw = source?.passFailFlips || source?.statusFlips || source?.flips || source?.passFailChanges || [];
+    const driftsRaw = source?.candidateDrifts || source?.candidateDrift || source?.driftBadges || source?.candidateChanges || [];
+
+    const flips = (Array.isArray(flipsRaw) ? flipsRaw : []).map((x) => {
+      const from = String(x?.from || x?.prevStatus || x?.previous || '-').toUpperCase();
+      const to = String(x?.to || x?.nextStatus || x?.current || '-').toUpperCase();
+      const name = String(x?.scenario || x?.name || x?.screen || x?.id || '-');
+      return { name, from, to };
+    }).filter((x) => x.name && x.name !== '-');
+
+    const drifts = (Array.isArray(driftsRaw) ? driftsRaw : []).map((x) => {
+      const name = String(x?.name || x?.candidate || x?.scenario || x?.id || '-');
+      const prev = toNum(x?.prevScore ?? x?.before ?? x?.previous);
+      const curr = toNum(x?.score ?? x?.after ?? x?.current);
+      const delta = toNum(x?.delta ?? ((prev != null && curr != null) ? (curr - prev) : null));
+      const reason = String(x?.reason || x?.message || '').trim();
+      return { name, prev, curr, delta, reason };
+    }).filter((x) => x.name && x.name !== '-');
+
+    if (!flips.length && !drifts.length) return null;
+    return { flips, drifts };
+  }
+
+  async function loadValidationDeltaFromPaths(payload) {
+    const keys = [
+      payload?.latestValidationDeltaPath,
+      payload?.validationDeltaPath,
+      payload?.paths?.latestValidationDeltaPath,
+      payload?.paths?.validationDeltaPath,
+      payload?.artifacts?.latestValidationDeltaPath,
+      payload?.artifacts?.validationDeltaPath,
+      payload?.report?.latestValidationDeltaPath,
+      payload?.report?.validationDeltaPath,
+      payload?.latest?.validationDeltaPath,
+    ].filter(Boolean);
+    for (const k of keys) {
+      try {
+        const res = await fetch(fileUrl(k));
+        if (!res.ok) continue;
+        const j = await res.json();
+        const normalized = normalizeValidationDelta(j);
+        if (normalized) return normalized;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  async function hydrateValidationDelta(payload) {
+    const fromPayload = normalizeValidationDelta(payload);
+    if (fromPayload) return fromPayload;
+    return await loadValidationDeltaFromPaths(payload || {});
+  }
+
+  function renderValidationDeltaPanel(data) {
+    const box = document.getElementById('validationDeltaPanel');
+    if (!box) return;
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced' || !data) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const flips = Array.isArray(data.flips) ? data.flips : [];
+    const drifts = Array.isArray(data.drifts) ? data.drifts : [];
+    if (!flips.length && !drifts.length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    box.style.display = 'block';
+    const flipRows = flips.slice(0, 8).map((f) => `<li><span class="mono">${safeText(f.name)}</span>: <span class="code-chip">${safeText(f.from)}</span> → <span class="code-chip">${safeText(f.to)}</span></li>`).join('');
+    const driftBadges = drifts.slice(0, 12).map((d) => {
+      const deltaText = d.delta == null ? '-' : (d.delta > 0 ? `+${d.delta}` : `${d.delta}`);
+      const scoreText = (d.prev != null && d.curr != null) ? `${d.prev}→${d.curr}` : '-';
+      return `<span class="drift-badge"><b>${safeText(d.name)}</b> <span class="mini">${scoreText} (${deltaText})</span></span>`;
+    }).join('');
+
+    box.innerHTML = `
+      <div style="font-weight:700">Latest Validation Delta</div>
+      <div class="delta-badge-row">
+        <span class="summary-chip">Pass/Fail Flip ${flips.length}건</span>
+        <span class="summary-chip">Candidate Drift ${drifts.length}건</span>
+      </div>
+      ${flips.length ? `<div class="mini" style="margin-top:8px">최근 상태 전환</div><ul class="delta-list">${flipRows}</ul>` : ''}
+      ${drifts.length ? `<div class="mini" style="margin-top:8px">Candidate drift badge</div><div>${driftBadges}</div>` : ''}
+    `;
+  }
+
+  async function refreshValidationDelta(payload) {
+    try {
+      const data = await hydrateValidationDelta(payload);
+      lastValidationDelta = data;
+      renderValidationDeltaPanel(lastValidationDelta);
+    } catch (_) {
+      renderValidationDeltaPanel(lastValidationDelta);
+    }
+  }
+
   async function onOauthLogin() {
     try {
       const j = await postJson('/api/llm/oauth/start', { provider: 'openai' }, 30000, 0);
@@ -1376,6 +1510,7 @@
         renderFailureCodeStats(lastExecutedRows);
         renderRetryStatsPanel(lastExecutedRows, final.retryStats);
         renderParityDriftPanel(final);
+        await refreshValidationDelta(final);
         applyFailureCodeFilter();
         const s = final.summary || {};
         const c = final.coverage || {};
@@ -1387,6 +1522,7 @@
         renderFailureCodeStats([]);
         renderRetryStatsPanel([], null);
         renderParityDriftPanel(final);
+        await refreshValidationDelta(final);
         renderExecutedRowsTable([]);
       }
     } catch (e) {
@@ -1398,6 +1534,7 @@
       renderRetryStatsPanel([], null);
       renderParityDriftPanel(null);
       renderExecutedRowsTable([]);
+      renderValidationDeltaPanel(lastValidationDelta);
     } finally {
       setButtonBusy('execBtn', false);
     }
