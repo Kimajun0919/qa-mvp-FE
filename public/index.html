@@ -79,6 +79,11 @@
     .summary-chip { font-size:12px; padding:4px 8px; border:1px solid #2e3f68; border-radius:999px; background:#121c3a; color:#c6d5fb; }
     .checklist-box { margin-top:10px; border:1px dashed #2e3f68; border-radius:8px; padding:8px; background:#0b1329; }
     .checklist-copy { margin-left:auto; }
+    .fine-checklist-box { margin-top:10px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .fine-bucket-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:8px; }
+    .fine-bucket { border:1px solid #2e3f68; border-radius:8px; padding:8px; background:#101a36; }
+    .fine-bucket ul { margin:6px 0 0 0; padding-left:18px; }
+    .fine-bucket li { margin:4px 0; font-size:12px; color:var(--muted); }
     .retry-panel { margin-top:8px; border:1px solid var(--line); border-radius:10px; background:#0f162c; padding:10px; }
     .retry-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
     .retry-list { margin:6px 0 0 0; padding-left:18px; }
@@ -215,6 +220,7 @@
         <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
         <div id="oneClickProgress" class="advisory-box" style="margin-top:8px; display:none"></div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
+        <div id="fineChecklistBox" class="fine-checklist-box advanced-only" style="display:none"></div>
       </section>
     </div>
 
@@ -695,6 +701,7 @@
       })).json();
 
       raw.textContent = JSON.stringify(auto, null, 2);
+      renderFineChecklistBuckets(auto);
       if (auto.ok) {
         document.getElementById('checkOut').textContent = auto.tsv || '';
         lastChecklistTSV = auto.tsv || '';
@@ -724,6 +731,68 @@
       cols.forEach((c, i) => row[c] = vals[i] || '');
       return row;
     });
+  }
+
+  function normalizeBucketItems(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        const text = item.label || item.name || item.scenario || item.test || item.value || item.desc || item.description || item.message;
+        return String(text || '').trim();
+      }
+      return String(item || '').trim();
+    }).filter(Boolean);
+  }
+
+  function extractFineChecklistBuckets(payload) {
+    const root = (payload && typeof payload === 'object') ? payload : {};
+    const source = root.fineGrainedChecklist || root.expandedChecklist || root.checklistBuckets || root.buckets || root.groupedChecklist || null;
+    if (!source || typeof source !== 'object') return null;
+
+    const field = normalizeBucketItems(source.field || source.fields || source.inputs || source.requiredFields);
+    const action = normalizeBucketItems(source.action || source.actions || source.interactions || source.steps);
+    const assertion = normalizeBucketItems(source.assertion || source.assertions || source.expectations || source.checks);
+
+    if (!field.length && !action.length && !assertion.length) return null;
+    return { field, action, assertion };
+  }
+
+  function renderFineChecklistBuckets(payload) {
+    const box = document.getElementById('fineChecklistBox');
+    if (!box) return;
+
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced') {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const buckets = extractFineChecklistBuckets(payload);
+    if (!buckets) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const bucketCard = (title, list) => `
+      <div class="fine-bucket">
+        <div style="font-weight:600">${title} <span class="mini">(${list.length})</span></div>
+        <ul>${(list.length ? list : ['(없음)']).map((x) => `<li>${safeText(x)}</li>`).join('')}</ul>
+      </div>
+    `;
+
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="font-weight:700">고급 체크리스트 그룹</div>
+      <div class="mini" style="margin-top:4px">fine-grained bucket 데이터가 있을 때만 표시됩니다.</div>
+      <div class="fine-bucket-grid">
+        ${bucketCard('Field', buckets.field)}
+        ${bucketCard('Action', buckets.action)}
+        ${bucketCard('Assertion', buckets.assertion)}
+      </div>
+    `;
   }
 
   function safeText(v) {
@@ -1347,6 +1416,7 @@
       })).json();
       document.getElementById('checkOut').textContent = j.ok ? j.tsv : JSON.stringify(j, null, 2);
       lastChecklistTSV = j.tsv || '';
+      renderFineChecklistBuckets(j);
     } finally {
       setButtonBusy('checkBtn', false);
     }
