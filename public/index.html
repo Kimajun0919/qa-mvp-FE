@@ -150,6 +150,11 @@
           <select id="transitionTemplate" style="min-width:240px"><option value="">템플릿 선택</option></select>
           <button id="runTransitionBtn" class="btn secondary">전이검증 실행</button>
           <button id="conditionMatrixBtn" class="btn secondary">조건매트릭스 미리보기</button>
+          <button id="analysisReloadBtn" class="btn secondary">분석 재조회</button>
+          <button id="flowMapBtn" class="btn secondary">Flow Map 생성</button>
+          <button id="structureMapBtn" class="btn secondary">Structure Map 생성</button>
+          <button id="flowsRunBtn" class="btn secondary">Flows 실행</button>
+          <button id="flowsFinalizeBtn" class="btn secondary">Flows 확정</button>
         </div>
         <div id="autoProgress" class="muted" style="margin-top:8px">자동생성 상태: 대기</div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
@@ -193,6 +198,8 @@
   let lastChecklistTSV = '';
   let lastExecutedRows = [];
   let lastTemplates = [];
+  let lastAnalysisId = '';
+  let lastFlows = [];
 
   function setUIMode(mode) {
     const m = mode === 'advanced' ? 'advanced' : 'simple';
@@ -382,6 +389,7 @@
       const j = await (await fetch(apiUrl('/api/analyze'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
       if (j.ok) {
+        lastAnalysisId = j.analysisId || lastAnalysisId;
         const reports = await loadReports(j.reports);
         updateKPIs(reports?.quality, '-');
         renderAdvisories(j.advisories || []);
@@ -400,6 +408,7 @@
       const j = await (await fetch(apiUrl('/api/oneclick'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
       if (j.ok) {
+        lastAnalysisId = j.analysisId || j.analysis?.analysisId || lastAnalysisId;
         lastReportPath = j.reportPath || '';
         lastReportJson = j.reportJson || '';
         lastFixCsv = j.fixSheet?.csv || '';
@@ -427,6 +436,7 @@
       const analyzed = await (await fetch(apiUrl('/api/analyze'), {
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, ...getLLMOptions(), ...getAuthOptions() })
       })).json();
+      lastAnalysisId = analyzed.analysisId || lastAnalysisId;
       if (!analyzed.ok || !analyzed.analysisId) {
         raw.textContent = JSON.stringify(analyzed, null, 2);
         progress.textContent = '자동생성 상태: 실패 (analyze)';
@@ -516,6 +526,83 @@
       out.textContent = '전이검증 상태: 실패 (예외)';
     } finally {
       setButtonBusy('runTransitionBtn', false);
+    }
+  }
+
+  async function onAnalysisReload() {
+    if (!lastAnalysisId) return alert('먼저 사이트 분석을 실행하세요.');
+    setButtonBusy('analysisReloadBtn', true, '조회중...');
+    try {
+      const j = await (await fetch(apiUrl(`/api/analysis/${lastAnalysisId}`))).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+    } finally {
+      setButtonBusy('analysisReloadBtn', false);
+    }
+  }
+
+  async function onFlowMap() {
+    if (!lastAnalysisId) return alert('먼저 사이트 분석을 실행하세요.');
+    setButtonBusy('flowMapBtn', true, '생성중...');
+    try {
+      const body = {
+        analysisId: lastAnalysisId,
+        screen: (document.getElementById('checkScreen').value || '').trim(),
+        context: (document.getElementById('checkContext').value || '').trim(),
+      };
+      const j = await (await fetch(apiUrl('/api/flow-map'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+    } finally {
+      setButtonBusy('flowMapBtn', false);
+    }
+  }
+
+  async function onStructureMap() {
+    if (!lastAnalysisId) return alert('먼저 사이트 분석을 실행하세요.');
+    setButtonBusy('structureMapBtn', true, '생성중...');
+    try {
+      const body = {
+        analysisId: lastAnalysisId,
+        screen: (document.getElementById('checkScreen').value || '').trim(),
+        context: (document.getElementById('checkContext').value || '').trim(),
+      };
+      const j = await (await fetch(apiUrl('/api/structure-map'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+    } finally {
+      setButtonBusy('structureMapBtn', false);
+    }
+  }
+
+  async function onFlowsRun() {
+    if (!lastAnalysisId) return alert('먼저 사이트 분석을 실행하세요.');
+    setButtonBusy('flowsRunBtn', true, '실행중...');
+    try {
+      const body = { analysisId: lastAnalysisId, ...getLLMOptions() };
+      const j = await (await fetch(apiUrl('/api/flows/run'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+      lastFlows = Array.isArray(j.flows) ? j.flows : [];
+    } finally {
+      setButtonBusy('flowsRunBtn', false);
+    }
+  }
+
+  async function onFlowsFinalize() {
+    if (!lastAnalysisId) return alert('먼저 사이트 분석을 실행하세요.');
+    if (!Array.isArray(lastFlows) || !lastFlows.length) return alert('먼저 Flows 실행을 해주세요.');
+    setButtonBusy('flowsFinalizeBtn', true, '확정중...');
+    try {
+      const body = { analysisId: lastAnalysisId, flows: lastFlows };
+      const j = await (await fetch(apiUrl('/api/flows/finalize'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+    } finally {
+      setButtonBusy('flowsFinalizeBtn', false);
     }
   }
 
@@ -615,6 +702,11 @@
   document.getElementById('loadTemplatesBtn').addEventListener('click', onLoadTemplates);
   document.getElementById('runTransitionBtn').addEventListener('click', onRunTransition);
   document.getElementById('conditionMatrixBtn').addEventListener('click', onConditionMatrix);
+  document.getElementById('analysisReloadBtn').addEventListener('click', onAnalysisReload);
+  document.getElementById('flowMapBtn').addEventListener('click', onFlowMap);
+  document.getElementById('structureMapBtn').addEventListener('click', onStructureMap);
+  document.getElementById('flowsRunBtn').addEventListener('click', onFlowsRun);
+  document.getElementById('flowsFinalizeBtn').addEventListener('click', onFlowsFinalize);
   document.getElementById('testApiBtn').addEventListener('click', testApiConnection);
   document.getElementById('modeSimpleBtn').addEventListener('click', () => setUIMode('simple'));
   document.getElementById('modeAdvancedBtn').addEventListener('click', () => setUIMode('advanced'));
