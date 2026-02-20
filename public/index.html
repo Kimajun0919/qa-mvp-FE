@@ -134,12 +134,26 @@
           <label class="advanced-only"><input id="checkAuth" type="checkbox" /> 비로그인 접근 제어 포함</label>
           <label class="advanced-only"><input id="autoByMenu" type="checkbox" /> 메뉴맵 기준 URL 사용</label>
           <label><input id="execExhaustive" type="checkbox" /> 전수검사(느리지만 상세)</label>
+          <label class="advanced-only"><input id="allowRiskyActions" type="checkbox" /> 위험액션 허용</label>
           <button id="checkBtn" class="btn secondary advanced-only">단일 체크리스트 생성</button>
           <button id="autoCheckBtn" class="btn">전체 자동생성(사이트맵/메뉴맵)</button>
           <button id="execBtn" class="btn secondary">체크리스트 실행</button>
+          <button id="finalizeBtn" class="btn secondary advanced-only">최종시트 생성</button>
+        </div>
+        <div class="row advanced-only" style="margin-top:6px">
+          <input id="exhaustiveDepth" type="number" min="0" max="2" value="1" style="width:120px" placeholder="전수 깊이" />
+          <input id="exhaustiveBudgetMs" type="number" min="1000" step="1000" value="20000" style="width:160px" placeholder="전수 예산(ms)" />
+          <span class="muted">권장: 깊이 1, 예산 20000ms</span>
+        </div>
+        <div class="row advanced-only" style="margin-top:6px">
+          <button id="loadTemplatesBtn" class="btn secondary">전이 템플릿 불러오기</button>
+          <select id="transitionTemplate" style="min-width:240px"><option value="">템플릿 선택</option></select>
+          <button id="runTransitionBtn" class="btn secondary">전이검증 실행</button>
+          <button id="conditionMatrixBtn" class="btn secondary">조건매트릭스 미리보기</button>
         </div>
         <div id="autoProgress" class="muted" style="margin-top:8px">자동생성 상태: 대기</div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
+        <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
       </section>
     </div>
@@ -177,6 +191,8 @@
   let lastFixCsv = '';
   let lastFixXlsx = '';
   let lastChecklistTSV = '';
+  let lastExecutedRows = [];
+  let lastTemplates = [];
 
   function setUIMode(mode) {
     const m = mode === 'advanced' ? 'advanced' : 'simple';
@@ -456,6 +472,89 @@
     });
   }
 
+  async function onLoadTemplates() {
+    try {
+      setButtonBusy('loadTemplatesBtn', true, '불러오는중...');
+      const j = await (await fetch(apiUrl('/api/qa/templates'))).json();
+      const sel = document.getElementById('transitionTemplate');
+      sel.innerHTML = '<option value="">템플릿 선택</option>';
+      lastTemplates = (j.templates || []);
+      lastTemplates.forEach(t => {
+        const op = document.createElement('option');
+        op.value = t.key;
+        op.textContent = `[${t.category}] ${t.name}`;
+        sel.appendChild(op);
+      });
+    } catch (e) {
+      alert('템플릿 로드 실패: ' + (e?.message || e));
+    } finally {
+      setButtonBusy('loadTemplatesBtn', false);
+    }
+  }
+
+  async function onRunTransition() {
+    const baseUrl = document.getElementById('baseUrlInput').value.trim();
+    const templateKey = document.getElementById('transitionTemplate').value;
+    if (!baseUrl) return alert('URL 입력');
+    if (!templateKey) return alert('템플릿 선택');
+    const out = document.getElementById('transitionSummary');
+    out.textContent = '전이검증 상태: 실행 중...';
+    setButtonBusy('runTransitionBtn', true, '실행중...');
+    try {
+      const body = { templateKey, baseUrl, ...getAuthOptions() };
+      const j = await (await fetch(apiUrl('/api/flow/transition-check'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+      if (j.ok) {
+        const s = j.summary || {};
+        out.textContent = `전이검증 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0}`;
+      } else {
+        out.textContent = '전이검증 상태: 실패';
+      }
+    } catch (e) {
+      out.textContent = '전이검증 상태: 실패 (예외)';
+    } finally {
+      setButtonBusy('runTransitionBtn', false);
+    }
+  }
+
+  async function onConditionMatrix() {
+    const screen = document.getElementById('checkScreen').value.trim() || document.getElementById('baseUrlInput').value.trim();
+    if (!screen) return alert('화면/URL 입력');
+    setButtonBusy('conditionMatrixBtn', true, '생성중...');
+    try {
+      const body = { screen, context: (document.getElementById('checkContext').value || '').trim(), ...getLLMOptions() };
+      const j = await (await fetch(apiUrl('/api/condition-matrix'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+      if (!j.ok) alert('조건매트릭스 생성 실패');
+    } finally {
+      setButtonBusy('conditionMatrixBtn', false);
+    }
+  }
+
+  async function onFinalizeReport() {
+    const rows = lastExecutedRows?.length ? lastExecutedRows : parseTSV(lastChecklistTSV || document.getElementById('checkOut').textContent || '');
+    if (!rows.length) return alert('먼저 체크리스트 실행 또는 생성 결과가 필요합니다.');
+    setButtonBusy('finalizeBtn', true, '생성중...');
+    try {
+      const body = { projectName: 'QA 테스트시트', items: rows };
+      const j = await (await fetch(apiUrl('/api/report/finalize'), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      })).json();
+      document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+      if (j.ok) {
+        lastFixCsv = j.finalSheet?.csv || lastFixCsv;
+        lastFixXlsx = j.finalSheet?.xlsx || lastFixXlsx;
+        alert('최종시트 생성 완료');
+      }
+    } finally {
+      setButtonBusy('finalizeBtn', false);
+    }
+  }
+
   async function onExecuteChecklist() {
     const rows = parseTSV(lastChecklistTSV || document.getElementById('checkOut').textContent || '');
     if (!rows.length) return alert('먼저 체크리스트를 생성하세요.');
@@ -464,17 +563,21 @@
     summaryEl.textContent = '실행 상태: 체크리스트 실행 중...';
     try {
       const exhaustive = !!document.getElementById('execExhaustive').checked;
-      const body = { projectName: 'QA 실행 결과', rows, exhaustive, exhaustiveClicks: 12, exhaustiveInputs: 12, ...getAuthOptions() };
+      const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
+      const exhaustiveBudgetMs = Math.max(1000, parseInt(document.getElementById('exhaustiveBudgetMs')?.value || '20000', 10) || 20000);
+      const allowRiskyActions = !!document.getElementById('allowRiskyActions')?.checked;
+      const body = { projectName: 'QA 실행 결과', rows, exhaustive, exhaustiveClicks: 12, exhaustiveInputs: 12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions, ...getAuthOptions() };
       const j = await (await fetch(apiUrl('/api/checklist/execute'), {
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
       })).json();
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
       if (j.ok) {
+        lastExecutedRows = j.rows || [];
         const s = j.summary || {};
         const c = j.coverage || {};
         const un = c.untestedEstimate || {};
         const ex = (c.exhaustive || {}).probeSummary || {};
-        summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0}`;
+        summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0} | depth ${exhaustiveDepth}, budget ${exhaustiveBudgetMs}ms, risky ${allowRiskyActions?'on':'off'}`;
       } else {
         summaryEl.textContent = '실행 상태: 실패';
       }
@@ -508,6 +611,10 @@
   document.getElementById('checkBtn').addEventListener('click', onChecklist);
   document.getElementById('autoCheckBtn').addEventListener('click', onAutoChecklist);
   document.getElementById('execBtn').addEventListener('click', onExecuteChecklist);
+  document.getElementById('finalizeBtn').addEventListener('click', onFinalizeReport);
+  document.getElementById('loadTemplatesBtn').addEventListener('click', onLoadTemplates);
+  document.getElementById('runTransitionBtn').addEventListener('click', onRunTransition);
+  document.getElementById('conditionMatrixBtn').addEventListener('click', onConditionMatrix);
   document.getElementById('testApiBtn').addEventListener('click', testApiConnection);
   document.getElementById('modeSimpleBtn').addEventListener('click', () => setUIMode('simple'));
   document.getElementById('modeAdvancedBtn').addEventListener('click', () => setUIMode('advanced'));
@@ -563,6 +670,7 @@
     if (!modelInput.value.trim()) modelInput.value = DEFAULT_MODEL[provider] || '';
     refreshApiHint();
     setTimeout(() => { testApiConnection(true).catch(() => {}); }, 200);
+    setTimeout(() => { onLoadTemplates().catch(() => {}); }, 300);
   }
 
   document.querySelectorAll('.tab').forEach(t => {
