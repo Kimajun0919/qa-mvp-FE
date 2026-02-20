@@ -75,6 +75,10 @@
     .remediation-box { margin-top:8px; border:1px solid var(--line); border-radius:10px; background:#0f162c; padding:10px; }
     .remediation-item { border:1px solid #2e3f68; border-radius:8px; padding:8px; margin-top:8px; }
     .remediation-item:first-child { margin-top:0; }
+    .remediation-summary { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+    .summary-chip { font-size:12px; padding:4px 8px; border:1px solid #2e3f68; border-radius:999px; background:#121c3a; color:#c6d5fb; }
+    .checklist-box { margin-top:10px; border:1px dashed #2e3f68; border-radius:8px; padding:8px; background:#0b1329; }
+    .checklist-copy { margin-left:auto; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -751,14 +755,53 @@
     return '실패 코드 기준 가이드가 없습니다. raw 로그/증거를 확인해 재현 후 체크리스트를 보강하세요.';
   }
 
+  function remediationGroupFor(code) {
+    const key = String(code || '').toUpperCase();
+    if (key.includes('HTTP_5') || key.includes('5XX') || key.includes('NETWORK')) return '백엔드/네트워크';
+    if (key.includes('AUTH') || key.includes('BLOCK') || key.includes('4XX')) return '권한/정책';
+    if (key.includes('TIMEOUT')) return '성능/타이밍';
+    if (key.includes('ASSERT') || key.includes('NOT_FOUND') || key.includes('NOT_VISIBLE') || key.includes('CLICK') || key.includes('TYPE')) return '시나리오/선택자';
+    return '기타';
+  }
+
+  function buildRemediationChecklist(codes, counts) {
+    const lines = ['[Remediation Action Checklist]'];
+    const groupCounts = {};
+    codes.forEach(code => {
+      const g = remediationGroupFor(code);
+      groupCounts[g] = (groupCounts[g] || 0) + (counts[code] || 0);
+    });
+    const orderedGroups = Object.keys(groupCounts).sort((a,b)=>groupCounts[b]-groupCounts[a]);
+    orderedGroups.forEach(g => lines.push(`- [ ] ${g} 점검 (${groupCounts[g]}건)`));
+    lines.push('');
+    codes.forEach(code => lines.push(`- [ ] ${code} (${counts[code]}건): ${remediationHintFor(code)}`));
+    return lines.join('\n');
+  }
+
+  function copyText(text) {
+    const payload = String(text || '');
+    if (!payload) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(payload).then(() => alert('조치 체크리스트를 복사했습니다.')).catch(() => {
+        alert('복사 실패: 수동으로 텍스트를 복사해주세요.');
+      });
+      return;
+    }
+    alert('복사 실패: 브라우저에서 클립보드를 지원하지 않습니다.');
+  }
+
   function renderRemediationHints(rows) {
     const box = document.getElementById('remediationHints');
     const list = Array.isArray(rows) ? rows : [];
     const counts = {};
+    const groupCounts = {};
+
     list.forEach(r => {
       const code = String(r['실패코드'] || '').trim();
       if (!code || code === 'OK') return;
       counts[code] = (counts[code] || 0) + 1;
+      const group = remediationGroupFor(code);
+      groupCounts[group] = (groupCounts[group] || 0) + 1;
     });
 
     const codes = Object.keys(counts).sort((a,b)=>(counts[b]-counts[a]));
@@ -768,12 +811,21 @@
       return;
     }
 
+    const checklist = buildRemediationChecklist(codes, counts);
+    const groupSummary = Object.keys(groupCounts).sort((a,b)=>(groupCounts[b]-groupCounts[a]))
+      .map(group => `<span class="summary-chip">${group} ${groupCounts[group]}건</span>`).join('');
+
     box.style.display = 'block';
-    box.innerHTML = `<div style="font-weight:700">실패코드별 조치 가이드</div><div class="mini" style="margin-top:4px">execute 결과를 기준으로 우선순위 높은 코드부터 제안합니다.</div>` +
+    box.innerHTML = `<div style="font-weight:700">실패코드별 조치 가이드</div><div class="mini" style="margin-top:4px">execute 결과를 기준으로 우선순위 높은 코드부터 제안합니다.</div><div class="remediation-summary">${groupSummary}</div>` +
       codes.map(code => {
         const hint = remediationHintFor(code);
-        return `<div class="remediation-item"><div><span class="code-chip mono">${code}</span> <span class="mini">${counts[code]}건</span></div><div style="margin-top:4px">${hint}</div></div>`;
-      }).join('');
+        const group = remediationGroupFor(code);
+        return `<div class="remediation-item"><div><span class="code-chip mono">${code}</span> <span class="mini">${counts[code]}건 · ${group}</span></div><div style="margin-top:4px">${hint}</div></div>`;
+      }).join('') +
+      `<div class="checklist-box"><div class="row"><div style="font-weight:600">복붙용 액션 체크리스트</div><button id="copyRemediationChecklistBtn" class="btn secondary checklist-copy">복사</button></div><pre id="remediationChecklistText" class="mini mono" style="margin-top:6px; max-height:180px; white-space:pre-wrap;">${safeText(checklist)}</pre></div>`;
+
+    const copyBtn = document.getElementById('copyRemediationChecklistBtn');
+    if (copyBtn) copyBtn.onclick = () => copyText(checklist);
   }
 
   function renderExecutedRowsTable(rows) {
