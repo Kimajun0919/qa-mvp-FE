@@ -441,6 +441,29 @@
     box.innerHTML += `<div style="color:${color};margin:2px 0">• ${msg}</div>`;
   }
 
+  async function executeChecklistBatches(allRows, opts, batchSize = 20) {
+    const merged = { ok: true, rows: [], summary: { PASS:0, FAIL:0, BLOCKED:0 }, coverage: {} };
+    for (let i = 0; i < allRows.length; i += batchSize) {
+      const batch = allRows.slice(i, i + batchSize);
+      stageLog(`3/8 실행 배치 ${Math.floor(i/batchSize)+1}/${Math.ceil(allRows.length/batchSize)} (${batch.length} rows)`);
+      const j = await postJson('/api/checklist/execute', {
+        projectName:'QA 실행 결과',
+        rows: batch,
+        maxRows: batch.length,
+        ...opts,
+        ...getAuthOptions()
+      }, 240000, 2);
+      if (!j.ok) throw new Error('checklist/execute 배치 실패');
+      const s = j.summary || {};
+      merged.summary.PASS += (s.PASS || 0);
+      merged.summary.FAIL += (s.FAIL || 0);
+      merged.summary.BLOCKED += (s.BLOCKED || 0);
+      merged.rows.push(...(j.rows || []));
+      merged.coverage = j.coverage || merged.coverage;
+    }
+    return merged;
+  }
+
   async function onOneClick() {
     const baseUrl = document.getElementById('baseUrlInput').value.trim();
     if (!baseUrl) return alert('URL 입력');
@@ -476,7 +499,8 @@
       const exhaustiveDepth = Math.max(0, parseInt(document.getElementById('exhaustiveDepth')?.value || '1', 10) || 1);
       const exhaustiveBudgetMs = Math.max(1000, parseInt(document.getElementById('exhaustiveBudgetMs')?.value || '20000', 10) || 20000);
       const allowRiskyActions = !!document.getElementById('allowRiskyActions')?.checked;
-      const executed = await postJson('/api/checklist/execute', { projectName:'QA 실행 결과', rows, exhaustive, exhaustiveClicks:12, exhaustiveInputs:12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions, ...getAuthOptions() }, 300000, 2);
+      const execOpts = { exhaustive, exhaustiveClicks:12, exhaustiveInputs:12, exhaustiveDepth, exhaustiveBudgetMs, allowRiskyActions };
+      const executed = await executeChecklistBatches(rows, execOpts, 20);
       raw.textContent = JSON.stringify(executed, null, 2);
       if (!executed.ok) throw new Error('checklist/execute 실패');
       lastExecutedRows = executed.rows || [];
