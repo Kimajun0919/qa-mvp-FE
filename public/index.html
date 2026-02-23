@@ -104,6 +104,10 @@
     .decomp-card li { margin:4px 0; font-size:12px; color:var(--muted); }
     .decomp-evidence-list { margin:6px 0 0 0; padding-left:18px; }
     .decomp-evidence-list li { margin:4px 0; font-size:12px; color:var(--muted); }
+    .decomp-row-wrap { margin-top:10px; border:1px solid #2e3f68; border-radius:8px; overflow:auto; }
+    .decomp-row-table { width:100%; border-collapse:collapse; min-width:720px; }
+    .decomp-row-table th, .decomp-row-table td { border-bottom:1px solid #233053; padding:6px; text-align:left; font-size:12px; vertical-align:top; }
+    .decomp-row-table th { color:var(--muted); font-weight:600; }
     .drift-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; color:#c6d5fb; margin:4px 6px 0 0; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
@@ -834,7 +838,38 @@
     return text || fallback;
   }
 
-  function collectErrorDecomposition(rows) {
+  function normalizeDecompRows(payload) {
+    const root = (payload && typeof payload === 'object') ? payload : {};
+    const buckets = [
+      root.executedDecompositionRows,
+      root.executedDecomposition?.rows,
+      root.fineErrorDecompositionRows,
+      root.fineErrorDecomposition?.rows,
+      root.errorDecompositionRows,
+      root.errorDecomposition?.rows,
+      root.decompositionRows,
+      root.decomposition?.rows,
+      root.summary?.executedDecompositionRows,
+      root.summary?.decompositionRows,
+      root.meta?.executedDecompositionRows,
+      root.meta?.decompositionRows,
+    ];
+    const source = buckets.find((x) => Array.isArray(x));
+    if (!Array.isArray(source) || !source.length) return [];
+
+    return source.map((row) => {
+      const r = (row && typeof row === 'object') ? row : {};
+      const field = normalizeDecompName(r.field || r['필드'] || r.fieldName || r.targetField);
+      const action = normalizeDecompName(r.action || r['액션'] || r.stepAction || r.interaction);
+      const assertion = normalizeDecompName(r.assertion || r['검증'] || r.expectation || r.assert);
+      const error = normalizeFailCode(r.errorCode || r.code || r.error || r['실패코드']);
+      const evidence = String(r.evidence || r.message || r.reason || r['증거'] || '').trim() || '(증거 없음)';
+      return { field, action, assertion, error, evidence };
+    }).filter((x) => x.field !== '-' || x.action !== '-' || x.assertion !== '-' || x.error !== 'UNKNOWN' || x.evidence !== '(증거 없음)');
+  }
+
+  function collectErrorDecomposition(rows, payload = null) {
+    const backendRows = normalizeDecompRows(payload);
     const list = Array.isArray(rows) ? rows : [];
     const fieldCounts = {};
     const actionCounts = {};
@@ -842,31 +877,41 @@
     const codeCounts = {};
     const evidenceRows = [];
 
-    list.forEach((r) => {
-      if (String(r['실행결과'] || '').toUpperCase() === 'PASS') return;
-      const meta = (r['실행메타'] && typeof r['실행메타'] === 'object') ? r['실행메타'] : {};
-      const scenario = String(r['테스트시나리오'] || '').trim();
-      const field = normalizeDecompName(
-        r['필드'] || r['field'] || meta.field || meta.fieldName || meta.input || meta.targetField || r['화면']
-      );
-      const action = normalizeDecompName(
-        r['액션'] || r['action'] || meta.action || meta.stepAction || meta.interaction || meta.scenarioKind
-      );
-      const assertion = normalizeDecompName(
-        r['검증'] || r['assertion'] || meta.assertion || meta.expectation || r['실패사유']
-      );
-      const code = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode);
-      const evidence = String(r['증거'] || meta.evidence || meta.error || '').trim();
+    if (backendRows.length) {
+      backendRows.forEach((row) => {
+        fieldCounts[row.field] = (fieldCounts[row.field] || 0) + 1;
+        actionCounts[row.action] = (actionCounts[row.action] || 0) + 1;
+        assertionCounts[row.assertion] = (assertionCounts[row.assertion] || 0) + 1;
+        codeCounts[row.error] = (codeCounts[row.error] || 0) + 1;
+      });
+      backendRows.slice(0, 12).forEach((row) => evidenceRows.push({ scenario: `${row.field} / ${row.action}`, code: row.error, evidence: row.evidence }));
+    } else {
+      list.forEach((r) => {
+        if (String(r['실행결과'] || '').toUpperCase() === 'PASS') return;
+        const meta = (r['실행메타'] && typeof r['실행메타'] === 'object') ? r['실행메타'] : {};
+        const scenario = String(r['테스트시나리오'] || '').trim();
+        const field = normalizeDecompName(
+          r['필드'] || r['field'] || meta.field || meta.fieldName || meta.input || meta.targetField || r['화면']
+        );
+        const action = normalizeDecompName(
+          r['액션'] || r['action'] || meta.action || meta.stepAction || meta.interaction || meta.scenarioKind
+        );
+        const assertion = normalizeDecompName(
+          r['검증'] || r['assertion'] || meta.assertion || meta.expectation || r['실패사유']
+        );
+        const code = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode);
+        const evidence = String(r['증거'] || meta.evidence || meta.error || '').trim();
 
-      fieldCounts[field] = (fieldCounts[field] || 0) + 1;
-      actionCounts[action] = (actionCounts[action] || 0) + 1;
-      assertionCounts[assertion] = (assertionCounts[assertion] || 0) + 1;
-      codeCounts[code] = (codeCounts[code] || 0) + 1;
+        fieldCounts[field] = (fieldCounts[field] || 0) + 1;
+        actionCounts[action] = (actionCounts[action] || 0) + 1;
+        assertionCounts[assertion] = (assertionCounts[assertion] || 0) + 1;
+        codeCounts[code] = (codeCounts[code] || 0) + 1;
 
-      if (evidenceRows.length < 12 && (evidence || scenario)) {
-        evidenceRows.push({ scenario: scenario || '-', code, evidence: evidence || '(증거 없음)' });
-      }
-    });
+        if (evidenceRows.length < 12 && (evidence || scenario)) {
+          evidenceRows.push({ scenario: scenario || '-', code, evidence: evidence || '(증거 없음)' });
+        }
+      });
+    }
 
     const byCountDesc = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count }));
     const total = Object.values(codeCounts).reduce((acc, n) => acc + Number(n || 0), 0);
@@ -878,6 +923,8 @@
       assertion: byCountDesc(assertionCounts),
       code: byCountDesc(codeCounts),
       evidence: evidenceRows,
+      rows: backendRows,
+      source: backendRows.length ? 'backend' : 'derived',
     };
   }
 
@@ -913,6 +960,17 @@
         <div style="font-weight:600">Evidence 샘플 <span class="mini">(${(data.evidence || []).length})</span></div>
         <ul class="decomp-evidence-list">${(data.evidence || []).map((x) => `<li><span class="code-chip mono">${safeText(x.code)}</span> ${safeText(x.scenario)} · ${safeText(x.evidence).slice(0, 200)}</li>`).join('') || '<li>(없음)</li>'}</ul>
       </div>
+      ${(data.source === 'backend' && Array.isArray(data.rows) && data.rows.length) ? `
+      <div class="decomp-row-wrap">
+        <table class="decomp-row-table">
+          <thead><tr><th>#</th><th>Field</th><th>Action</th><th>Assertion</th><th>Error</th><th>Evidence</th></tr></thead>
+          <tbody>
+            ${data.rows.slice(0, 60).map((row, idx) => `<tr><td>${idx + 1}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono">${safeText(row.evidence).slice(0, 240)}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="mini" style="margin-top:6px">executed decomposition rows source: backend (${data.rows.length}건)</div>
+      ` : ''}
     `;
   }
 
@@ -1206,7 +1264,7 @@
     box.innerHTML = `<div style="font-weight:700">⚠️ Parity Drift 경고</div><div class="mini" style="margin-top:4px">백엔드 응답에서 실행 결과 불일치(mismatch) 신호가 감지되었습니다. 상세 원인 확인 후 재실행하세요.</div><ul class="parity-drift-list">${signals.map(s => `<li>${safeText(s)}</li>`).join('')}</ul>`;
   }
 
-  function renderFailureCodeStats(rows) {
+  function renderFailureCodeStats(rows, payload = null) {
     const list = Array.isArray(rows) ? rows : [];
     const counts = {};
     list.forEach(r => {
@@ -1228,7 +1286,7 @@
     const chips = Object.keys(counts).sort((a,b)=>(counts[b]-counts[a])).map(code => `${code}:${counts[code]}`);
     statEl.textContent = chips.length ? `실패코드 집계: ${chips.join(' | ')}` : '실패코드 집계: 없음';
     renderRemediationHints(list);
-    lastFineErrorDecomp = collectErrorDecomposition(list);
+    lastFineErrorDecomp = collectErrorDecomposition(list, payload);
     renderFineErrorDecompPanel(lastFineErrorDecomp);
   }
 
@@ -1871,7 +1929,7 @@
       document.getElementById('rawOut').textContent = JSON.stringify(final, null, 2);
       if (final.ok) {
         lastExecutedRows = final.rows || [];
-        renderFailureCodeStats(lastExecutedRows);
+        renderFailureCodeStats(lastExecutedRows, final);
         renderRetryStatsPanel(lastExecutedRows, final.retryStats);
         renderParityDriftPanel(final);
         await refreshAntiRegressionGate(final);
