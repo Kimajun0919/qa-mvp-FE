@@ -108,11 +108,21 @@
     .decomp-row-table { width:100%; border-collapse:collapse; min-width:720px; }
     .decomp-row-table th, .decomp-row-table td { border-bottom:1px solid #233053; padding:6px; text-align:left; font-size:12px; vertical-align:top; }
     .decomp-row-table th { color:var(--muted); font-weight:600; }
+    .decomp-summary-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:8px; }
+    .decomp-top-list { margin:6px 0 0 0; padding-left:0; list-style:none; }
+    .decomp-top-list li { margin:6px 0; font-size:12px; color:var(--muted); }
+    .decomp-top-row { display:flex; justify-content:space-between; gap:8px; margin-bottom:4px; }
+    .decomp-meter { height:6px; border-radius:999px; background:#0a1226; border:1px solid #26345c; overflow:hidden; }
+    .decomp-meter-fill { display:block; height:100%; background:linear-gradient(90deg,#4f46e5,#22d3ee); }
+    .decomp-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; align-items:center; }
+    .decomp-toolbar input, .decomp-toolbar select { padding:6px 8px; font-size:12px; border-radius:8px; }
+    .decomp-muted-chip { font-size:11px; color:var(--muted); }
     .drift-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; color:#c6d5fb; margin:4px 6px 0 0; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .decomp-grid, .decomp-summary-grid, .fine-bucket-grid, .retry-grid { grid-template-columns:1fr; }
     }
   </style>
 </head>
@@ -938,40 +948,80 @@
       return;
     }
 
-    const bucket = (title, list) => `
+    const meterList = (title, list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const top = arr.slice(0, 6);
+      const maxCount = Math.max(1, ...top.map((x) => Number(x?.count || 0)));
+      return `
       <div class="decomp-card">
-        <div style="font-weight:600">${title} <span class="mini">(${list.length})</span></div>
-        <ul>${(list.length ? list : [{ name: '(없음)', count: 0 }]).map((x) => `<li><span class="code-chip mono">${safeText(x.name)}</span> ${safeText(x.count)}건</li>`).join('')}</ul>
-      </div>
-    `;
+        <div style="font-weight:600">${title} <span class="mini">(${arr.length})</span></div>
+        <ul class="decomp-top-list">${(top.length ? top : [{ name: '(없음)', count: 0 }]).map((x) => {
+          const name = safeText(x.name || '-');
+          const count = Number(x.count || 0);
+          const pct = Math.round((count / maxCount) * 100);
+          return `<li><div class="decomp-top-row"><span class="code-chip mono">${name}</span><span>${count}건</span></div><div class="decomp-meter"><span class="decomp-meter-fill" style="width:${pct}%"></span></div></li>`;
+        }).join('')}</ul>
+      </div>`;
+    };
 
     box.style.display = 'block';
     box.innerHTML = `
       <div style="font-weight:700">Fine-grained Error Decomposition</div>
       <div class="mini" style="margin-top:4px">실패/차단 행을 Field · Action · Assertion · Error-code · Evidence로 분해합니다. (고급 모드 전용)</div>
-      <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span></div>
+      <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span><span class="summary-chip">source: ${safeText(data.source || 'unknown')}</span></div>
+      <div class="decomp-summary-grid">
+        ${meterList('Top Fields', data.field || [])}
+        ${meterList('Top Errors', data.code || [])}
+      </div>
       <div class="decomp-grid">
-        ${bucket('Field', data.field || [])}
-        ${bucket('Action', data.action || [])}
-        ${bucket('Assertion', data.assertion || [])}
-        ${bucket('Error-code', data.code || [])}
+        ${meterList('Action', data.action || [])}
+        ${meterList('Assertion', data.assertion || [])}
       </div>
       <div class="decomp-card" style="margin-top:10px;">
         <div style="font-weight:600">Evidence 샘플 <span class="mini">(${(data.evidence || []).length})</span></div>
         <ul class="decomp-evidence-list">${(data.evidence || []).map((x) => `<li><span class="code-chip mono">${safeText(x.code)}</span> ${safeText(x.scenario)} · ${safeText(x.evidence).slice(0, 200)}</li>`).join('') || '<li>(없음)</li>'}</ul>
       </div>
       ${(data.source === 'backend' && Array.isArray(data.rows) && data.rows.length) ? `
+      <div class="decomp-toolbar">
+        <input id="decompFilterInput" type="text" placeholder="필드/액션/검증/에러/증거 검색" />
+        <select id="decompErrorSelect"><option value="">모든 error code</option>${Array.from(new Set(data.rows.map((row) => safeText(row.error || '').trim()).filter(Boolean))).sort().map((code) => `<option value="${encodeURIComponent(code)}">${safeText(code)}</option>`).join('')}</select>
+        <span class="decomp-muted-chip" id="decompRowCount"></span>
+      </div>
       <div class="decomp-row-wrap">
         <table class="decomp-row-table">
           <thead><tr><th>#</th><th>Field</th><th>Action</th><th>Assertion</th><th>Error</th><th>Evidence</th></tr></thead>
-          <tbody>
-            ${data.rows.slice(0, 60).map((row, idx) => `<tr><td>${idx + 1}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono">${safeText(row.evidence).slice(0, 240)}</td></tr>`).join('')}
-          </tbody>
+          <tbody id="decompRowBody"></tbody>
         </table>
       </div>
       <div class="mini" style="margin-top:6px">executed decomposition rows source: backend (${data.rows.length}건)</div>
       ` : ''}
     `;
+
+    if (!(data.source === 'backend' && Array.isArray(data.rows) && data.rows.length)) return;
+
+    const filterInput = document.getElementById('decompFilterInput');
+    const errorSelect = document.getElementById('decompErrorSelect');
+    const body = document.getElementById('decompRowBody');
+    const rowCount = document.getElementById('decompRowCount');
+    if (!filterInput || !errorSelect || !body || !rowCount) return;
+
+    const rows = data.rows.slice(0, 200);
+    const renderRows = () => {
+      const q = String(filterInput.value || '').trim().toLowerCase();
+      const codeFilter = decodeURIComponent(String(errorSelect.value || ''));
+      const filtered = rows.filter((row) => {
+        if (codeFilter && safeText(row.error) !== codeFilter) return false;
+        if (!q) return true;
+        const blob = `${safeText(row.field)} ${safeText(row.action)} ${safeText(row.assertion)} ${safeText(row.error)} ${safeText(row.evidence)}`.toLowerCase();
+        return blob.includes(q);
+      });
+      rowCount.textContent = `표시 ${filtered.length} / ${rows.length}건`;
+      body.innerHTML = filtered.slice(0, 80).map((row, idx) => `<tr><td>${idx + 1}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono">${safeText(row.evidence).slice(0, 240)}</td></tr>`).join('') || '<tr><td colspan="6" class="mini">조건에 맞는 행이 없습니다.</td></tr>';
+    };
+
+    filterInput.addEventListener('input', renderRows);
+    errorSelect.addEventListener('change', renderRows);
+    renderRows();
   }
 
   function safeText(v) {
