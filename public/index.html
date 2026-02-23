@@ -97,6 +97,13 @@
     .delta-badge-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
     .delta-list { margin:6px 0 0 0; padding-left:18px; }
     .delta-list li { margin:4px 0; font-size:13px; color:var(--muted); }
+    .decomp-panel { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .decomp-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:8px; }
+    .decomp-card { border:1px solid #2e3f68; border-radius:8px; padding:8px; background:#101a36; }
+    .decomp-card ul { margin:6px 0 0 0; padding-left:18px; }
+    .decomp-card li { margin:4px 0; font-size:12px; color:var(--muted); }
+    .decomp-evidence-list { margin:6px 0 0 0; padding-left:18px; }
+    .decomp-evidence-list li { margin:4px 0; font-size:12px; color:var(--muted); }
     .drift-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; color:#c6d5fb; margin:4px 6px 0 0; }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
@@ -226,6 +233,7 @@
             <tbody id="execRowsBody"></tbody>
           </table>
         </div>
+        <div id="fineErrorDecompPanel" class="decomp-panel advanced-only" style="display:none"></div>
         <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
         <div id="oneClickProgress" class="advisory-box" style="margin-top:8px; display:none"></div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
@@ -298,6 +306,7 @@
   let lastValidationDelta = null;
   let lastValidationLaneStatus = null;
   let lastAntiRegressionGate = null;
+  let lastFineErrorDecomp = null;
   let autopilotDone = ['대기 중'];
   let autopilotActive = ['요청 대기'];
 
@@ -316,6 +325,7 @@
     renderValidationLanePanel(lastValidationLaneStatus);
     renderValidationDeltaPanel(lastValidationDelta);
     renderAntiRegressionGatePanel(lastAntiRegressionGate);
+    renderFineErrorDecompPanel(lastFineErrorDecomp);
   }
 
   function getApiBase() {
@@ -814,6 +824,98 @@
     `;
   }
 
+  function normalizeFailCode(raw) {
+    const code = String(raw || '').trim();
+    return code && code !== 'OK' ? code : 'UNKNOWN';
+  }
+
+  function normalizeDecompName(raw, fallback = '-') {
+    const text = String(raw || '').trim();
+    return text || fallback;
+  }
+
+  function collectErrorDecomposition(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const fieldCounts = {};
+    const actionCounts = {};
+    const assertionCounts = {};
+    const codeCounts = {};
+    const evidenceRows = [];
+
+    list.forEach((r) => {
+      if (String(r['실행결과'] || '').toUpperCase() === 'PASS') return;
+      const meta = (r['실행메타'] && typeof r['실행메타'] === 'object') ? r['실행메타'] : {};
+      const scenario = String(r['테스트시나리오'] || '').trim();
+      const field = normalizeDecompName(
+        r['필드'] || r['field'] || meta.field || meta.fieldName || meta.input || meta.targetField || r['화면']
+      );
+      const action = normalizeDecompName(
+        r['액션'] || r['action'] || meta.action || meta.stepAction || meta.interaction || meta.scenarioKind
+      );
+      const assertion = normalizeDecompName(
+        r['검증'] || r['assertion'] || meta.assertion || meta.expectation || r['실패사유']
+      );
+      const code = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode);
+      const evidence = String(r['증거'] || meta.evidence || meta.error || '').trim();
+
+      fieldCounts[field] = (fieldCounts[field] || 0) + 1;
+      actionCounts[action] = (actionCounts[action] || 0) + 1;
+      assertionCounts[assertion] = (assertionCounts[assertion] || 0) + 1;
+      codeCounts[code] = (codeCounts[code] || 0) + 1;
+
+      if (evidenceRows.length < 12 && (evidence || scenario)) {
+        evidenceRows.push({ scenario: scenario || '-', code, evidence: evidence || '(증거 없음)' });
+      }
+    });
+
+    const byCountDesc = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count }));
+    const total = Object.values(codeCounts).reduce((acc, n) => acc + Number(n || 0), 0);
+    if (!total) return null;
+    return {
+      total,
+      field: byCountDesc(fieldCounts),
+      action: byCountDesc(actionCounts),
+      assertion: byCountDesc(assertionCounts),
+      code: byCountDesc(codeCounts),
+      evidence: evidenceRows,
+    };
+  }
+
+  function renderFineErrorDecompPanel(data) {
+    const box = document.getElementById('fineErrorDecompPanel');
+    if (!box) return;
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced' || !data) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    const bucket = (title, list) => `
+      <div class="decomp-card">
+        <div style="font-weight:600">${title} <span class="mini">(${list.length})</span></div>
+        <ul>${(list.length ? list : [{ name: '(없음)', count: 0 }]).map((x) => `<li><span class="code-chip mono">${safeText(x.name)}</span> ${safeText(x.count)}건</li>`).join('')}</ul>
+      </div>
+    `;
+
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="font-weight:700">Fine-grained Error Decomposition</div>
+      <div class="mini" style="margin-top:4px">실패/차단 행을 Field · Action · Assertion · Error-code · Evidence로 분해합니다. (고급 모드 전용)</div>
+      <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span></div>
+      <div class="decomp-grid">
+        ${bucket('Field', data.field || [])}
+        ${bucket('Action', data.action || [])}
+        ${bucket('Assertion', data.assertion || [])}
+        ${bucket('Error-code', data.code || [])}
+      </div>
+      <div class="decomp-card" style="margin-top:10px;">
+        <div style="font-weight:600">Evidence 샘플 <span class="mini">(${(data.evidence || []).length})</span></div>
+        <ul class="decomp-evidence-list">${(data.evidence || []).map((x) => `<li><span class="code-chip mono">${safeText(x.code)}</span> ${safeText(x.scenario)} · ${safeText(x.evidence).slice(0, 200)}</li>`).join('') || '<li>(없음)</li>'}</ul>
+      </div>
+    `;
+  }
+
   function safeText(v) {
     if (v == null) return '';
     if (typeof v === 'string') return v;
@@ -1126,6 +1228,8 @@
     const chips = Object.keys(counts).sort((a,b)=>(counts[b]-counts[a])).map(code => `${code}:${counts[code]}`);
     statEl.textContent = chips.length ? `실패코드 집계: ${chips.join(' | ')}` : '실패코드 집계: 없음';
     renderRemediationHints(list);
+    lastFineErrorDecomp = collectErrorDecomposition(list);
+    renderFineErrorDecompPanel(lastFineErrorDecomp);
   }
 
   function applyFailureCodeFilter() {
@@ -1798,6 +1902,8 @@
       renderRetryStatsPanel([], null);
       renderParityDriftPanel(null);
       renderExecutedRowsTable([]);
+      lastFineErrorDecomp = null;
+      renderFineErrorDecompPanel(lastFineErrorDecomp);
       renderAntiRegressionGatePanel(lastAntiRegressionGate);
       renderValidationLanePanel(lastValidationLaneStatus);
       renderValidationDeltaPanel(lastValidationDelta);
