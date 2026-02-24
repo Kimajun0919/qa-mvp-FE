@@ -118,6 +118,13 @@
     .decomp-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; align-items:center; }
     .decomp-toolbar input, .decomp-toolbar select { padding:6px 8px; font-size:12px; border-radius:8px; }
     .decomp-muted-chip { font-size:11px; color:var(--muted); }
+    .decomp-sortable { cursor:pointer; user-select:none; }
+    .decomp-sortable .sort-caret { margin-left:4px; opacity:.5; font-size:10px; }
+    .decomp-sortable.active .sort-caret { opacity:1; color:#c6d5fb; }
+    .decomp-quick-filters { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+    .quick-filter-chip { font-size:11px; padding:4px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; color:#c6d5fb; cursor:pointer; }
+    .quick-filter-chip.active { border-color:#6158ff; background:#1b2750; }
+    .decomp-guardrail { margin-top:8px; border:1px solid rgba(245,158,11,.5); border-radius:10px; background:rgba(245,158,11,.11); padding:10px; }
     .decomp-evidence-missing { color:#fcd34d; background:rgba(245,158,11,.10); }
     .decomp-missing-cue { display:inline-flex; margin-left:6px; font-size:10px; color:#fcd34d; border:1px solid rgba(245,158,11,.45); background:rgba(245,158,11,.12); border-radius:999px; padding:1px 6px; }
     .decomp-group-list { margin:6px 0 0 0; padding-left:18px; }
@@ -132,6 +139,19 @@
     .run-progress-main { font-size:28px; font-weight:800; line-height:1.1; letter-spacing:.2px; }
     .run-progress-main .slash { color: var(--muted); margin:0 4px; font-weight:600; }
     .run-progress-meta { margin-top:6px; font-size:12px; color:var(--muted); }
+    .ops-stage-card { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .ops-stage-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:8px; }
+    .ops-stage-pill { border:1px solid #2e3f68; border-radius:999px; padding:6px 8px; text-align:center; font-size:12px; color:var(--muted); background:#101a36; font-weight:600; }
+    .ops-stage-pill.running { border-color:#2563eb; color:#93c5fd; background:rgba(37,99,235,.15); }
+    .ops-stage-pill.done { border-color:#16a34a; color:#86efac; background:rgba(22,163,74,.15); }
+    .ops-stage-pill.error { border-color:#ef4444; color:#fca5a5; background:rgba(239,68,68,.15); }
+    .ops-stage-meta { margin-top:8px; font-size:12px; color:var(--muted); }
+    .chain-panel { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .chain-flow { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+    .chain-node { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; }
+    .chain-arrow { color:var(--muted); font-size:12px; }
+    .chain-timeline { margin:8px 0 0 0; padding-left:18px; }
+    .chain-timeline li { margin:4px 0; font-size:12px; color:var(--muted); }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -260,6 +280,11 @@
           <div id="advancedRunProgressMain" class="run-progress-main"><span id="advancedCompletedRows">-</span><span class="slash">/</span><span id="advancedTargetRows">-</span></div>
           <div id="advancedRunProgressMeta" class="run-progress-meta">completed_rows / target_rows</div>
         </div>
+        <div id="opsStageProgress" class="ops-stage-card advanced-only" style="display:none">
+          <div style="font-weight:700">Ops Stage Progress</div>
+          <div id="opsStageGrid" class="ops-stage-grid"></div>
+          <div id="opsStageMeta" class="ops-stage-meta">Analyze/Chain/Checklist/Execute/Sheet</div>
+        </div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
         <div id="opsBackendGuard" class="ops-guard advanced-only" style="display:none"></div>
         <div class="row advanced-only" style="margin-top:6px">
@@ -363,6 +388,9 @@
   let lastSheetsSyncStatus = null;
   let lastSheetsSchemaValidation = null;
   let lastRunProgress = { completed: null, target: null };
+  const OPS_STAGE_ORDER = ['Analyze', 'Chain', 'Checklist', 'Execute', 'Sheet'];
+  const OPS_STATUS_PRIORITY = { pending: 0, running: 1, done: 2, error: 3 };
+  let opsStageState = { stages: {}, completed: null, target: null, updatedAt: null };
 
   function pickFirstNumber(...vals) {
     for (const v of vals) {
@@ -409,6 +437,102 @@
     updateAdvancedRunProgress({});
   }
 
+
+  function normalizeOpsStatus(raw) {
+    const t = String(raw || '').toLowerCase();
+    if (!t) return 'pending';
+    if (t.includes('error') || t.includes('fail')) return 'error';
+    if (t.includes('done') || t.includes('complete') || t.includes('ok') || t.includes('success')) return 'done';
+    if (t.includes('run') || t.includes('progress') || t.includes('working') || t.includes('queued')) return 'running';
+    return 'pending';
+  }
+
+  function mapPhaseToOpsStage(name) {
+    const t = String(name || '').toLowerCase();
+    if (!t) return null;
+    if (t.includes('analy')) return 'Analyze';
+    if (t.includes('chain') || t.includes('flow') || t.includes('bridge')) return 'Chain';
+    if (t.includes('check')) return 'Checklist';
+    if (t.includes('exec') || t.includes('run')) return 'Execute';
+    if (t.includes('sheet') || t.includes('final') || t.includes('report')) return 'Sheet';
+    return null;
+  }
+
+  function mergeOpsStageState(next) {
+    const merged = { ...opsStageState, stages: { ...(opsStageState.stages || {}) } };
+    if (next?.stages) {
+      Object.entries(next.stages).forEach(([stage, status]) => {
+        const prev = normalizeOpsStatus(merged.stages[stage]);
+        const cur = normalizeOpsStatus(status);
+        merged.stages[stage] = (OPS_STATUS_PRIORITY[cur] >= OPS_STATUS_PRIORITY[prev]) ? cur : prev;
+      });
+    }
+    const pickNonDecreasing = (prev, cur) => {
+      if (cur == null || !Number.isFinite(Number(cur))) return prev;
+      const ncur = Number(cur);
+      if (prev == null || !Number.isFinite(Number(prev))) return ncur;
+      return Math.max(Number(prev), ncur);
+    };
+    merged.completed = pickNonDecreasing(merged.completed, next?.completed);
+    merged.target = pickNonDecreasing(merged.target, next?.target);
+    merged.updatedAt = Date.now();
+    opsStageState = merged;
+    return merged;
+  }
+
+  function renderOpsStageProgress(next = null) {
+    const card = document.getElementById('opsStageProgress');
+    const grid = document.getElementById('opsStageGrid');
+    const meta = document.getElementById('opsStageMeta');
+    if (!card || !grid || !meta) return;
+
+    const merged = mergeOpsStageState(next || {});
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced') {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    grid.innerHTML = OPS_STAGE_ORDER.map((stage) => {
+      const status = normalizeOpsStatus(merged.stages?.[stage]);
+      const cls = status === 'pending' ? '' : status;
+      return `<div class="ops-stage-pill ${cls}">${stage}<div style="font-size:11px; margin-top:2px">${status}</div></div>`;
+    }).join('');
+
+    const done = merged.completed != null ? merged.completed : '-';
+    const total = merged.target != null ? merged.target : '-';
+    const updated = merged.updatedAt ? new Date(merged.updatedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-';
+    meta.textContent = `completed_rows/target_rows: ${done}/${total} · refresh ${updated}`;
+  }
+
+  function resetOpsStageProgress(seed = {}) {
+    opsStageState = { stages: {}, completed: null, target: null, updatedAt: null };
+    renderOpsStageProgress(seed);
+  }
+
+  function extractOpsStagePayload(payload = {}, fallback = {}) {
+    const root = (payload && typeof payload === 'object') ? payload : {};
+    const next = { stages: {}, completed: null, target: null };
+    const phaseBuckets = [root.phases, root.userPhase, root.adminPhase, root.bridgePhase, root.stageProgress, root.progressStages].filter(Array.isArray);
+    phaseBuckets.flat().forEach((p) => {
+      const stage = mapPhaseToOpsStage(p?.name || p?.stage || p?.type);
+      if (!stage) return;
+      next.stages[stage] = normalizeOpsStatus(p?.status || p?.state);
+    });
+    const runStatus = mapPhaseToOpsStage(root.status || root.stage);
+    if (runStatus) next.stages[runStatus] = normalizeOpsStatus(root.status || root.state);
+
+    next.completed = pickFirstNumber(
+      root.completed_rows, root.completedRows, root.progress?.completed_rows, root.progress?.doneRows,
+      root.summary?.completed_rows, fallback.completed
+    );
+    next.target = pickFirstNumber(
+      root.target_rows, root.targetRows, root.progress?.target_rows, root.progress?.totalRows,
+      root.summary?.target_rows, fallback.target
+    );
+    return next;
+  }
+
   function setUIMode(mode) {
     const m = mode === 'advanced' ? 'advanced' : 'simple';
     localStorage.setItem('QA_UI_MODE', m);
@@ -425,6 +549,7 @@
     renderValidationDeltaPanel(lastValidationDelta);
     renderAntiRegressionGatePanel(lastAntiRegressionGate);
     renderFineErrorDecompPanel(lastFineErrorDecomp);
+    renderOpsStageProgress();
   }
 
   function getApiBase() {
@@ -574,6 +699,7 @@
     autopilotActive = ['분석 준비', '플로우 생성 대기'];
     renderAutopilotCard();
     refreshAutopilotArtifacts();
+    renderOpsStageProgress();
   }
 
   function autopilotStepDone(text, nextActive = []) {
@@ -646,6 +772,7 @@
     const baseUrl = document.getElementById('baseUrlInput').value.trim();
     if (!baseUrl) return alert('URL 입력');
     setButtonBusy('analyzeBtn', true, '분석중...');
+    renderOpsStageProgress({ stages: { Analyze: 'running' } });
     try {
       const body = { baseUrl, ...getLLMOptions(), ...getAuthOptions() };
       const j = await (await fetch(apiUrl('/api/analyze'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
@@ -656,7 +783,10 @@
         updateKPIs(reports?.quality, '-');
         renderAdvisories(j.advisories || []);
         await refreshAntiRegressionGate(j);
+        await refreshValidationLaneStatus(j);
         await refreshValidationDelta(j);
+        renderOpsStageProgress(extractOpsStagePayload(j, { completed: 0, target: lastRunProgress.target }));
+        renderOpsStageProgress({ stages: { Analyze: 'done' } });
       }
     } finally {
       setButtonBusy('analyzeBtn', false);
@@ -749,6 +879,7 @@
 
     try {
       autopilotStart();
+      resetOpsStageProgress({ stages: { Analyze: 'running' } });
       stageLog('1/3 통합 oneclick(dual) 요청 시작');
       autopilotStepDone('원클릭 요청 전송', ['사용자 분석 진행 중', '관리자 분석 대기']);
       const j = await postJson('/api/oneclick', {
@@ -764,6 +895,7 @@
       if (!j.ok) throw new Error('oneclick dual 실패');
 
       stageLog('2/3 사용자/관리자 파이프라인 완료', true);
+      renderOpsStageProgress(extractOpsStagePayload(j));
       autopilotStepDone('사용자/관리자 파이프라인 완료', ['리포트 정리 중', '아티팩트 링크 갱신 중']);
       const user = j.user || {};
       const admin = j.admin || {};
@@ -787,6 +919,7 @@
       }
 
       stageLog('3/3 완료', true);
+      renderOpsStageProgress({ stages: { Analyze: 'done', Chain: 'done', Checklist: 'done', Execute: 'done', Sheet: 'done' } });
       autopilotStepDone('리포트/아티팩트 갱신 완료', []);
       await refreshAntiRegressionGate(j);
       await refreshValidationDelta(j);
@@ -794,6 +927,7 @@
     } catch (e) {
       autopilotStepDone('실행 실패: ' + (e?.message || e), ['오류 확인 필요']);
       stageLog('실패: ' + (e?.message || e), false);
+      renderOpsStageProgress({ stages: { Execute: 'error' } });
       alert('원클릭 실패: ' + (e?.message || e));
     } finally {
       setButtonBusy('oneClickBtn', false);
@@ -1009,14 +1143,15 @@
       const action = normalizeDecompName(r.action || r['액션'] || r.stepAction || r.interaction || refs.action);
       const assertion = normalizeDecompName(r.assertion || r['검증'] || r.expectation || r.assert || refs.assert);
       const error = normalizeFailCode(r.errorCode || r.code || r.error || r['실패코드'] || refs.error);
+      const chainStatus = normalizeGroupLabel(r.chainStatus || r.chain_status || r['ChainStatus'] || r['체인상태'] || refs.chainstatus || refs.chain, 'UNKNOWN');
       const priority = normalizePriorityTier(r.priority || r.priorityTier || r.tier || r['우선순위'] || refs.priority);
       const evidenceRaw = String(r.evidence || r.message || r.reason || r['증거'] || refs.evidence || '').trim();
       const hasEvidence = Boolean(evidenceRaw);
       const evidence = hasEvidence ? evidenceRaw : '(증거 없음)';
       const domain = inferDomainFromScreen(screen);
       const boardDomain = makeBoardDomainKey(screen, section);
-      return { screen, section, field, action, assertion, error, evidence, hasEvidence, priority, domain, boardDomain };
-    }).filter((x) => x.field !== '-' || x.action !== '-' || x.assertion !== '-' || x.error !== 'UNKNOWN' || x.evidence !== '(증거 없음)');
+      return { screen, section, field, action, assertion, error, chainStatus, evidence, hasEvidence, priority, domain, boardDomain };
+    }).filter((x) => x.field !== '-' || x.action !== '-' || x.assertion !== '-' || x.error !== 'UNKNOWN' || x.chainStatus !== 'UNKNOWN' || x.evidence !== '(증거 없음)');
   }
 
   function normalizeDensityMetrics(payload, rows = []) {
@@ -1091,6 +1226,7 @@
     const actionCounts = {};
     const assertionCounts = {};
     const codeCounts = {};
+    const chainStatusCounts = {};
     const screenCounts = {};
     const sectionCounts = {};
     const evidenceRows = [];
@@ -1101,6 +1237,7 @@
       actionCounts[row.action] = (actionCounts[row.action] || 0) + 1;
       assertionCounts[row.assertion] = (assertionCounts[row.assertion] || 0) + 1;
       codeCounts[row.error] = (codeCounts[row.error] || 0) + 1;
+      chainStatusCounts[row.chainStatus || 'UNKNOWN'] = (chainStatusCounts[row.chainStatus || 'UNKNOWN'] || 0) + 1;
       screenCounts[row.screen] = (screenCounts[row.screen] || 0) + 1;
       sectionCounts[row.section] = (sectionCounts[row.section] || 0) + 1;
       decompRows.push(row);
@@ -1129,13 +1266,19 @@
           r['검증'] || r['assertion'] || meta.assertion || meta.expectation || refs.assert || r['실패사유']
         );
         const error = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode || refs.error);
+        const chainStatus = normalizeGroupLabel(
+          r['ChainStatus'] || r['chainStatus'] || r['체인상태'] ||
+          meta.chainStatus || meta.chain_status || meta.statusChain ||
+          refs.chainstatus || refs.chain,
+          'UNKNOWN'
+        );
         const priority = normalizePriorityTier(r['우선순위'] || r['priority'] || meta.priority || meta.priorityTier || refs.priority);
         const evidenceRaw = String(r['증거'] || meta.evidence || meta.error || refs.evidence || '').trim();
         const hasEvidence = Boolean(evidenceRaw);
         const domain = inferDomainFromScreen(screen);
         const boardDomain = makeBoardDomainKey(screen, section);
 
-        const row = { screen, section, field, action, assertion, error, evidence: evidenceRaw || '(증거 없음)', hasEvidence, priority, domain, boardDomain };
+        const row = { screen, section, field, action, assertion, error, chainStatus, evidence: evidenceRaw || '(증거 없음)', hasEvidence, priority, domain, boardDomain };
         pushStats(row);
 
         if (evidenceRows.length < 16 && (evidenceRaw || scenario)) {
@@ -1185,6 +1328,7 @@
       action: byCountDesc(actionCounts),
       assertion: byCountDesc(assertionCounts),
       code: byCountDesc(codeCounts),
+      chainStatus: byCountDesc(chainStatusCounts),
       screen: byCountDesc(screenCounts),
       section: byCountDesc(sectionCounts),
       evidence: evidenceRows,
@@ -1268,30 +1412,42 @@
         ${meterList('Top Fields', data.field || [])}
         ${meterList('Top Errors', data.code || [])}
       </div>
-      <div class="decomp-grid">
+      <div class="decomp-summary-grid"> 
+        ${meterList('Top ChainStatus', data.chainStatus || [])}
         ${meterList('Action', data.action || [])}
+      </div>
+      <div class="decomp-grid">
         ${meterList('Assertion', data.assertion || [])}
+        ${meterList('Top Sections (duplicate check)', data.section || [])}
       </div>
       <div class="decomp-card" style="margin-top:10px;">
         <div style="font-weight:600">Evidence 샘플 <span class="mini">(${(data.evidence || []).length})</span></div>
         <ul class="decomp-evidence-list">${(data.evidence || []).map((x) => `<li><span class="code-chip mono">${safeText(x.code)}</span> ${safeText(x.scenario)} · ${safeText(x.evidence).slice(0, 200)}</li>`).join('') || '<li>(없음)</li>'}</ul>
       </div>
       ${(Array.isArray(data.rows) && data.rows.length) ? `
+      ${(evidenceMissingCount > 0) ? `<div class="decomp-guardrail"><div style="font-weight:700">Guardrail: 증거 누락 ${evidenceMissingCount}건</div><div class="mini" style="margin-top:4px">Finalize 전 누락 행을 먼저 확인하세요. 아래 quick filter의 <b>MISSING</b> 또는 ErrorCode/ChainStatus chip으로 즉시 좁힐 수 있습니다.</div></div>` : ''}
       <div class="decomp-toolbar">
-        <input id="decompFilterInput" type="text" placeholder="화면/섹션/필드/액션/검증/에러/증거 검색" />
+        <input id="decompFilterInput" type="text" placeholder="화면/섹션/필드/액션/검증/에러/증거/체인상태 검색" />
         <select id="decompScreenSelect"><option value="">모든 화면</option>${Array.from(new Set(data.rows.map((row) => safeText(row.screen || '').trim()).filter(Boolean))).sort().map((name) => `<option value="${encodeURIComponent(name)}">${safeText(name)}</option>`).join('')}</select>
         <select id="decompSectionSelect"><option value="">모든 섹션</option>${Array.from(new Set(data.rows.map((row) => safeText(row.section || '').trim()).filter(Boolean))).sort().map((name) => `<option value="${encodeURIComponent(name)}">${safeText(name)}</option>`).join('')}</select>
         <select id="decompErrorSelect"><option value="">모든 error code</option>${Array.from(new Set(data.rows.map((row) => safeText(row.error || '').trim()).filter(Boolean))).sort().map((code) => `<option value="${encodeURIComponent(code)}">${safeText(code)}</option>`).join('')}</select>
+        <select id="decompChainStatusSelect"><option value="">모든 ChainStatus</option>${Array.from(new Set(data.rows.map((row) => safeText(row.chainStatus || '').trim()).filter(Boolean))).sort().map((status) => `<option value="${encodeURIComponent(status)}">${safeText(status)}</option>`).join('')}</select>
         <select id="decompEvidenceSelect"><option value="ALL">증거 전체</option><option value="MISSING">증거 누락만</option><option value="HAS">증거 있는 행만</option></select>
+        <select id="decompSortSelect"><option value="idx:asc">정렬: 원본순</option><option value="error:desc">ErrorCode 많은순</option><option value="error:asc">ErrorCode 적은순</option><option value="chainStatus:asc">ChainStatus 오름차순</option><option value="chainStatus:desc">ChainStatus 내림차순</option><option value="evidence:asc">Evidence 오름차순</option><option value="evidence:desc">Evidence 내림차순</option></select>
         <select id="decompPageSize"><option value="20">20행</option><option value="40" selected>40행</option><option value="80">80행</option></select>
         <button id="decompPrevBtn" class="btn secondary" type="button">이전</button>
         <button id="decompNextBtn" class="btn secondary" type="button">다음</button>
         <span class="decomp-muted-chip" id="decompPageInfo"></span>
         <span class="decomp-muted-chip" id="decompRowCount"></span>
       </div>
+      <div class="decomp-quick-filters">
+        ${(data.code || []).slice(0, 5).map((row) => `<button class="quick-filter-chip" data-kind="error" data-value="${encodeURIComponent(safeText(row.name || ''))}" type="button">ErrorCode: ${safeText(row.name || '-')} (${safeText(row.count || 0)})</button>`).join('')}
+        ${(data.chainStatus || []).slice(0, 5).map((row) => `<button class="quick-filter-chip" data-kind="chain" data-value="${encodeURIComponent(safeText(row.name || ''))}" type="button">ChainStatus: ${safeText(row.name || '-')} (${safeText(row.count || 0)})</button>`).join('')}
+        ${(evidenceMissingCount > 0) ? `<button class="quick-filter-chip" data-kind="evidence" data-value="MISSING" type="button">Evidence: MISSING (${evidenceMissingCount})</button>` : ''}
+      </div>
       <div class="decomp-row-wrap">
         <table class="decomp-row-table">
-          <thead><tr><th>#</th><th>Screen</th><th>Section</th><th>Field</th><th>Action</th><th>Assertion</th><th>Error</th><th>Evidence</th></tr></thead>
+          <thead><tr><th>#</th><th class="decomp-sortable" data-sort="screen">Screen<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="section">Section<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="field">Field<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="action">Action<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="assertion">Assertion<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="error">ErrorCode<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="chainStatus">ChainStatus<span class="sort-caret">↕</span></th><th class="decomp-sortable" data-sort="evidence">Evidence<span class="sort-caret">↕</span></th></tr></thead>
           <tbody id="decompRowBody"></tbody>
         </table>
       </div>
@@ -1796,6 +1952,61 @@
     return null;
   }
 
+  function normalizeChainVisualization(payload) {
+    const root = firstObj(payload, {});
+    const source = firstObj(
+      root?.chain,
+      root?.validationChain,
+      root?.handoffChain,
+      root?.latestValidationSummary?.chain,
+      root?.validationSummary?.chain,
+      root?.validation?.chain,
+      root?.summary?.chain,
+      root
+    ) || {};
+
+    const actorRaw = source?.actors || source?.actorTransitions || source?.actorChain || source?.flowActors || [];
+    const actorList = (Array.isArray(actorRaw) ? actorRaw : String(actorRaw || '').split(/\s*[-=>]+\s*/))
+      .map((x) => String(x || '').trim().toUpperCase())
+      .filter(Boolean);
+    const actors = actorList.length ? actorList : ['USER', 'ADMIN', 'USER'];
+
+    const timelineRaw = source?.timeline || source?.chainTimeline || source?.statusTimeline || source?.events || [];
+    const timeline = (Array.isArray(timelineRaw) ? timelineRaw : []).map((item, idx) => {
+      if (typeof item === 'string') {
+        return { step: idx + 1, actor: '-', status: String(item).toUpperCase(), note: '' };
+      }
+      const actor = String(item?.actor || item?.role || item?.owner || '-').toUpperCase();
+      const status = String(item?.status || item?.state || item?.result || 'UNKNOWN').toUpperCase();
+      const note = String(item?.note || item?.message || item?.detail || '').trim();
+      const step = toNum(item?.step ?? item?.index ?? (idx + 1)) ?? (idx + 1);
+      return { step, actor, status, note };
+    });
+
+    const handoffRaw = source?.handoffKey ?? source?.handoff?.key ?? source?.handoffToken ?? source?.bridgeKey ?? source?.key;
+    const handoffKey = String(handoffRaw || '').trim();
+
+    const hasSignal = Boolean(
+      timeline.length ||
+      handoffKey ||
+      source?.handoff ||
+      source?.timeline ||
+      source?.statusTimeline ||
+      source?.actorTransitions ||
+      source?.actors ||
+      source?.chainStatus
+    );
+
+    if (!hasSignal) return null;
+    const chainStatus = String(source?.chainStatus || source?.status || source?.result || '').toUpperCase().trim();
+    return {
+      actors,
+      timeline,
+      chainStatus: chainStatus || null,
+      handoffKey: handoffKey || null,
+    };
+  }
+
   function normalizeValidationDelta(payload) {
     const root = firstObj(payload, {});
     const candidateRoots = [
@@ -1994,11 +2205,12 @@
     return await loadValidationDeltaFromPaths(payload || {});
   }
 
-  function renderValidationLanePanel(data) {
+  function renderValidationLanePanel(data, payload = null) {
     const box = document.getElementById('validationLanePanel');
     if (!box) return;
     const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
-    if (uiMode !== 'advanced' || !data || (!data.nodeStatus && !data.fastapiStatus)) {
+    const chain = normalizeChainVisualization(payload || data);
+    if (uiMode !== 'advanced' || (!data && !chain) || (!data?.nodeStatus && !data?.fastapiStatus && !chain)) {
       box.style.display = 'none';
       box.innerHTML = '';
       return;
@@ -2010,15 +2222,40 @@
       return `<span class="summary-chip">${safeText(name)} <span class="badge ${cls}" style="margin-left:6px">${safeText(state)}</span></span>`;
     };
 
+    const laneBlock = (data?.nodeStatus || data?.fastapiStatus)
+      ? `
+        <div style="font-weight:700">Node vs FastAPI Lane Status</div>
+        <div class="delta-badge-row">
+          ${chip('Node', data.nodeStatus)}
+          ${chip('FastAPI', data.fastapiStatus)}
+        </div>
+      `
+      : '';
+
+    const actorFlow = chain
+      ? `<div class="chain-flow">${chain.actors.map((a, idx) => `${idx ? '<span class="chain-arrow">→</span>' : ''}<span class="chain-node">${safeText(a)}</span>`).join('')}</div>`
+      : '';
+
+    const timelineRows = (chain?.timeline || []).slice(0, 8).map((t) => {
+      const state = normalizeLaneStatus(t.status) || t.status || 'UNKNOWN';
+      return `<li><span class="code-chip">#${safeText(String(t.step))}</span> <b>${safeText(String(t.actor || '-'))}</b> → <span class="badge ${state === 'PASS' ? 'PASS' : (state === 'WARN' ? 'PASS_WITH_WARNINGS' : (state === 'FAIL' ? 'FAIL' : 'PASS_WITH_WARNINGS'))}">${safeText(state)}</span>${t.note ? ` <span class="mini">${safeText(t.note)}</span>` : ''}</li>`;
+    }).join('');
+
+    const chainBlock = chain
+      ? `
+        <div class="chain-panel">
+          <div style="font-weight:700">Chain Visualization</div>
+          ${chain.chainStatus ? `<div class="mini" style="margin-top:4px">chain status: <span class="code-chip">${safeText(chain.chainStatus)}</span></div>` : ''}
+          <div class="mini" style="margin-top:6px">Actor transition</div>
+          ${actorFlow}
+          ${(chain.timeline || []).length ? `<div class="mini" style="margin-top:8px">Chain status timeline</div><ul class="chain-timeline">${timelineRows}</ul>` : ''}
+          <div class="mini" style="margin-top:8px">Handoff key: ${chain.handoffKey ? `<span class="mono">${safeText(chain.handoffKey)}</span>` : 'N/A'}</div>
+        </div>
+      `
+      : '';
+
     box.style.display = 'block';
-    box.innerHTML = `
-      <div style="font-weight:700">Node vs FastAPI Lane Status</div>
-      <div class="delta-badge-row">
-        ${chip('Node', data.nodeStatus)}
-        ${chip('FastAPI', data.fastapiStatus)}
-      </div>
-      <div class="mini" style="margin-top:6px">validation summary 기반 표시 (값이 있을 때만 노출)</div>
-    `;
+    box.innerHTML = `${laneBlock}${chainBlock}<div class="mini" style="margin-top:6px">advanced 모드에서만 chain/handoff 시각화 노출</div>`;
   }
 
   function renderValidationDeltaPanel(data) {
@@ -2062,9 +2299,9 @@
     try {
       const data = await hydrateValidationLaneStatus(payload);
       lastValidationLaneStatus = data;
-      renderValidationLanePanel(lastValidationLaneStatus);
+      renderValidationLanePanel(lastValidationLaneStatus, payload);
     } catch (_) {
-      renderValidationLanePanel(lastValidationLaneStatus);
+      renderValidationLanePanel(lastValidationLaneStatus, payload);
     }
   }
 
@@ -2339,6 +2576,7 @@
       const syncJobId = pickFirst(status, ['syncJobId', 'jobId', 'id']);
       if (syncJobId) document.getElementById('sheetsSyncJobId').value = String(syncJobId);
       renderSheetsSyncStatus(status);
+      renderOpsStageProgress({ stages: { Sheet: j.ok ? 'done' : 'error' }, completed: status?.completed_rows ?? null, target: status?.target_rows ?? null });
       if (!j.ok) alert('Sheets pull 동기화 실패');
     } catch (e) {
       alert('Sheets pull 동기화 실패: ' + (e?.message || e));
@@ -2357,6 +2595,7 @@
       const j = await getJson(path, 60000);
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
       renderSheetsSyncStatus(j.status || j.sync || j.data || j);
+      renderOpsStageProgress({ stages: { Sheet: j.ok ? 'running' : 'error' } });
       if (!j.ok) alert('Sheets sync 상태 조회 실패');
     } catch (e) {
       alert('Sheets sync 상태 조회 실패: ' + (e?.message || e));
@@ -2391,6 +2630,7 @@
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
       lastFineErrorDecomp = collectErrorDecomposition(lastExecutedRows, j);
       renderFineErrorDecompPanel(lastFineErrorDecomp);
+      renderOpsStageProgress({ stages: { Sheet: j.ok ? 'done' : 'error' } });
       if (j.ok) {
         lastFixCsv = j.finalSheet?.csv || lastFixCsv;
         lastFixXlsx = j.finalSheet?.xlsx || lastFixXlsx;
@@ -2437,6 +2677,7 @@
     summaryEl.textContent = '실행 상태: 체크리스트 실행 요청 중...';
     hideOpsBackendGuard();
     resetAdvancedRunProgress();
+    resetOpsStageProgress({ stages: { Execute: 'running', Checklist: 'done' }, completed: 0, target: rows.length });
     updateAdvancedRunProgress({}, { completed: 0, target: rows.length });
     try {
       const exhaustive = !!document.getElementById('execExhaustive').checked;
@@ -2459,6 +2700,7 @@
         const total = (pg.totalRows != null) ? pg.totalRows : '-';
         summaryEl.textContent = `실행 상태: ${st.status || 'running'} (job: ${jobId}) | 진행 ${done}/${total} (${pct})`;
         updateAdvancedRunProgress(st, { completed: pg.doneRows ?? pg.done_rows ?? null, target: pg.totalRows ?? pg.total_rows ?? rows.length });
+        renderOpsStageProgress(extractOpsStagePayload(st, { completed: pg.doneRows ?? pg.done_rows ?? null, target: pg.totalRows ?? pg.total_rows ?? rows.length }));
         if (st.status === 'done' || st.status === 'error') {
           final = st;
           break;
@@ -2468,6 +2710,7 @@
       document.getElementById('rawOut').textContent = JSON.stringify(final, null, 2);
       if (final.ok) {
         updateAdvancedRunProgress(final, { completed: rows.length, target: rows.length });
+        renderOpsStageProgress({ stages: { Execute: 'done' }, completed: rows.length, target: rows.length });
         lastExecutedRows = final.rows || [];
         renderFailureCodeStats(lastExecutedRows, final);
         renderRetryStatsPanel(lastExecutedRows, final.retryStats);
@@ -2483,6 +2726,7 @@
         summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0} | depth ${exhaustiveDepth}, budget ${exhaustiveBudgetMs}ms, risky ${allowRiskyActions?'on':'off'}`;
       } else {
         updateAdvancedRunProgress(final, { completed: 0, target: rows.length });
+        renderOpsStageProgress({ stages: { Execute: 'error' }, completed: 0, target: rows.length });
         summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
         renderFailureCodeStats([]);
         renderRetryStatsPanel([], null);
@@ -2494,6 +2738,7 @@
       }
     } catch (e) {
       updateAdvancedRunProgress({}, { completed: 0, target: rows.length });
+      renderOpsStageProgress({ stages: { Execute: 'error' }, completed: 0, target: rows.length });
       if (isBackendUnavailableError(e)) {
         showOpsBackendGuard('백엔드 연결이 불안정해 실행을 완료하지 못했습니다. (non-blocking)\nAPI 주소/연결 테스트를 확인한 뒤 다시 시도하세요.');
       }
@@ -2526,6 +2771,7 @@
       document.getElementById('checkOut').textContent = j.ok ? j.tsv : JSON.stringify(j, null, 2);
       lastChecklistTSV = j.tsv || '';
       renderFineChecklistBuckets(j);
+      renderOpsStageProgress({ stages: { Checklist: j.ok ? 'done' : 'error' } });
     } finally {
       setButtonBusy('checkBtn', false);
     }
