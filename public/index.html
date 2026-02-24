@@ -903,6 +903,71 @@
     }).filter((x) => x.field !== '-' || x.action !== '-' || x.assertion !== '-' || x.error !== 'UNKNOWN' || x.evidence !== '(증거 없음)');
   }
 
+  function normalizeDensityMetrics(payload, rows = []) {
+    const root = (payload && typeof payload === 'object') ? payload : {};
+    const candidates = [
+      root.decompositionDensity,
+      root.decompositionDensityMetrics,
+      root.fineErrorDecomposition?.density,
+      root.fineErrorDecomposition?.metrics,
+      root.executedDecomposition?.density,
+      root.executedDecomposition?.metrics,
+      root.decomposition?.density,
+      root.decomposition?.metrics,
+      root.summary?.decompositionDensity,
+      root.summary?.decompositionDensityMetrics,
+      root.summary?.density,
+      root.meta?.decompositionDensity,
+      root.meta?.decompositionDensityMetrics,
+      root.finalize?.decompositionDensity,
+      root.finalize?.decompositionDensityMetrics,
+      root.report?.decompositionDensity,
+      root.report?.decompositionDensityMetrics,
+      root.finalSheet?.decompositionDensity,
+      root.finalSheet?.decompositionDensityMetrics,
+    ].filter((x) => x && typeof x === 'object');
+
+    const pickNum = (obj, keys) => {
+      if (!obj || typeof obj !== 'object') return null;
+      for (const key of keys) {
+        const v = toNum(obj[key]);
+        if (v != null) return v;
+      }
+      return null;
+    };
+
+    let rowSplitRatio = null;
+    let evidenceLinkageRate = null;
+    let source = null;
+
+    for (const obj of candidates) {
+      rowSplitRatio = pickNum(obj, ['rowSplitRatio', 'row_split_ratio', 'splitRatio', 'rowSplitRate']);
+      evidenceLinkageRate = pickNum(obj, ['evidenceLinkageRate', 'evidence_linkage_rate', 'linkageRate', 'evidenceRate']);
+      if (rowSplitRatio != null || evidenceLinkageRate != null) {
+        source = 'payload';
+        break;
+      }
+    }
+
+    if (rowSplitRatio == null && evidenceLinkageRate == null && Array.isArray(rows) && rows.length) {
+      const rowCount = rows.length;
+      const splitRows = rows.filter((row) => {
+        const token = `${safeText(row.field)} ${safeText(row.action)} ${safeText(row.assertion)}`;
+        return token.includes('/') || token.includes('>') || token.includes(',');
+      }).length;
+      const linkedRows = rows.filter((row) => {
+        const evidence = String(row.evidence || '').trim();
+        return evidence && evidence !== '(증거 없음)';
+      }).length;
+      rowSplitRatio = rowCount ? splitRows / rowCount : null;
+      evidenceLinkageRate = rowCount ? linkedRows / rowCount : null;
+      source = 'derived';
+    }
+
+    if (rowSplitRatio == null && evidenceLinkageRate == null) return null;
+    return { rowSplitRatio, evidenceLinkageRate, source };
+  }
+
   function collectErrorDecomposition(rows, payload = null) {
     const backendRows = normalizeDecompRows(payload);
     const list = Array.isArray(rows) ? rows : [];
@@ -950,7 +1015,8 @@
 
     const byCountDesc = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count }));
     const total = Object.values(codeCounts).reduce((acc, n) => acc + Number(n || 0), 0);
-    if (!total) return null;
+    const density = normalizeDensityMetrics(payload, backendRows);
+    if (!total && !density) return null;
     return {
       total,
       field: byCountDesc(fieldCounts),
@@ -959,6 +1025,7 @@
       code: byCountDesc(codeCounts),
       evidence: evidenceRows,
       rows: backendRows,
+      density,
       source: backendRows.length ? 'backend' : 'derived',
     };
   }
@@ -997,11 +1064,15 @@
       return `<li><span class="code-chip mono">${code}</span> (${count}건) · ${hint}</li>`;
     }).join('');
 
+    const density = (data && typeof data.density === 'object') ? data.density : null;
+    const ratioLabel = (v) => (v == null ? '-' : `${(Number(v) * 100).toFixed(1)}%`);
+    const densityBadges = density ? `<span class="summary-chip">Row split ratio: ${ratioLabel(density.rowSplitRatio)}</span><span class="summary-chip">Evidence linkage rate: ${ratioLabel(density.evidenceLinkageRate)}</span><span class="summary-chip">density source: ${safeText(density.source || 'payload')}</span>` : '';
+
     box.style.display = 'block';
     box.innerHTML = `
       <div style="font-weight:700">Fine-grained Error Decomposition</div>
       <div class="mini" style="margin-top:4px">실패/차단 행을 Field · Action · Assertion · Error-code · Evidence로 분해합니다. (고급 모드 전용)</div>
-      <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span><span class="summary-chip">source: ${safeText(data.source || 'unknown')}</span></div>
+      <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span><span class="summary-chip">source: ${safeText(data.source || 'unknown')}</span>${densityBadges}</div>
       ${(topActionCodes.length ? `<div class="decomp-card" style="margin-top:8px"><div style="font-weight:600">즉시 조치 우선순위 (Top error code)</div><ul class="decomp-evidence-list">${actionChecklist}</ul></div>` : '')}
       <div class="decomp-summary-grid">
         ${meterList('Top Fields', data.field || [])}
@@ -1954,6 +2025,8 @@
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
       })).json();
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+      lastFineErrorDecomp = collectErrorDecomposition(lastExecutedRows, j);
+      renderFineErrorDecompPanel(lastFineErrorDecomp);
     } finally {
       setButtonBusy('flowsFinalizeBtn', false);
     }
@@ -2105,6 +2178,8 @@
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
       })).json();
       document.getElementById('rawOut').textContent = JSON.stringify(j, null, 2);
+      lastFineErrorDecomp = collectErrorDecomposition(lastExecutedRows, j);
+      renderFineErrorDecompPanel(lastFineErrorDecomp);
       if (j.ok) {
         lastFixCsv = j.finalSheet?.csv || lastFixCsv;
         lastFixXlsx = j.finalSheet?.xlsx || lastFixXlsx;
