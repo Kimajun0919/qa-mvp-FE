@@ -155,13 +155,18 @@
 
     .graph2d-wrap { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
     .graph2d-layout { display:grid; grid-template-columns: 2fr 1fr; gap:10px; }
-    .graph2d-canvas { width:100%; height:360px; border:1px solid #2e3f68; border-radius:8px; background:radial-gradient(circle at 10% 0%, #1a2751, #0b1329 55%); }
-    .graph2d-side { border:1px solid #2e3f68; border-radius:8px; background:#101a36; padding:8px; font-size:12px; }
+    .graph2d-toolbar { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center; }
+    .graph2d-toolbar .mini { margin-left:auto; }
+    .graph2d-btn { font-size:11px; padding:4px 8px; border-radius:8px; border:1px solid #2e3f68; background:#121c3a; color:#c6d5fb; cursor:pointer; }
+    .graph2d-btn.active { border-color:#6158ff; color:#e0e7ff; background:#1a2550; }
+    .graph2d-canvas { width:100%; height:480px; border:1px solid #2e3f68; border-radius:8px; background:radial-gradient(circle at 10% 0%, #1a2751, #0b1329 55%); cursor:grab; user-select:none; }
+    .graph2d-canvas.dragging { cursor:grabbing; }
+    .graph2d-side { border:1px solid #2e3f68; border-radius:8px; background:#101a36; padding:8px; font-size:12px; max-height:480px; overflow:auto; }
     .graph2d-legend { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
     .graph2d-chip { font-size:11px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; }
     @media (max-width: 980px) {
       .graph2d-layout { grid-template-columns: 1fr; }
-      .graph2d-canvas { height:300px; }
+      .graph2d-canvas { height:340px; }
     }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
@@ -192,6 +197,7 @@
       </div>
     </div>
     <div class="muted" id="apiBaseHint" style="margin-top:8px">API: same-origin (현재 도메인)</div>
+    <div id="endpointHealthPanel" class="validation-delta-panel advanced-only" style="margin-top:8px; display:none"></div>
     <div class="row advanced-only" style="margin-top:8px">
       <span class="muted">OpenAI 인증</span>
       <select id="openaiAuthMode"><option value="env" selected>env 사용</option><option value="apiKey">API Key 직접입력</option><option value="oauthToken">OAuth Token 입력</option></select>
@@ -404,6 +410,7 @@
   let lastFineErrorDecomp = null;
   let lastChainGraph = null;
   let lastInteractionSelection = null;
+  let interactionGraph2DState = { scale: 1, tx: 0, ty: 0, collapsedScreens: new Set() };
   let autopilotDone = ['대기 중'];
   let autopilotActive = ['요청 대기'];
   let lastSheetsSyncStatus = null;
@@ -412,6 +419,7 @@
   const OPS_STAGE_ORDER = ['Analyze', 'Chain', 'Checklist', 'Execute', 'Sheet'];
   const OPS_STATUS_PRIORITY = { pending: 0, running: 1, done: 2, error: 3 };
   let opsStageState = { stages: {}, completed: null, target: null, updatedAt: null };
+  let endpointHealthState = { apiHealth: 'unknown', oneclickReady: 'unknown', lastCheckedAt: null, detail: '' };
 
   function pickFirstNumber(...vals) {
     for (const v of vals) {
@@ -603,6 +611,74 @@
     document.getElementById('apiBaseHint').textContent = statusText ? `${originText} | ${statusText}` : originText;
   }
 
+  function tunnelLabel(url) {
+    const u = String(url || '').toLowerCase();
+    if (!u) return 'local';
+    if (u.includes('ngrok') || u.includes('loca.lt') || u.includes('trycloudflare') || u.includes('tunnel')) return 'external-tunnel';
+    return 'direct';
+  }
+
+  function renderEndpointHealthPanel() {
+    const panel = document.getElementById('endpointHealthPanel');
+    if (!panel) return;
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced') {
+      panel.style.display = 'none';
+      return;
+    }
+
+    const badge = (status) => {
+      const map = {
+        healthy: '<span class="gate-pill" style="border-color:rgba(22,163,74,.55);color:#86efac">✅ HEALTHY</span>',
+        degraded: '<span class="gate-pill" style="border-color:rgba(245,158,11,.55);color:#fcd34d">⚠️ DEGRADED</span>',
+        down: '<span class="gate-pill" style="border-color:rgba(239,68,68,.55);color:#fca5a5">⛔ DOWN</span>',
+        unknown: '<span class="gate-pill">… CHECK NEEDED</span>',
+      };
+      return map[status] || map.unknown;
+    };
+
+    const checkedAt = endpointHealthState.lastCheckedAt
+      ? new Date(endpointHealthState.lastCheckedAt).toLocaleTimeString('ko-KR', { hour12: false })
+      : '-';
+    const apiBase = getApiBase() || location.origin;
+    const route = `${apiBase.replace(/\/$/, '')}/api/oneclick`;
+
+    panel.style.display = '';
+    panel.innerHTML = `
+      <div style="font-weight:700">외부 터널 Endpoint Health</div>
+      <div class="delta-badge-row">
+        <span class="drift-badge">API /health ${badge(endpointHealthState.apiHealth)}</span>
+        <span class="drift-badge">POST /api/oneclick ${badge(endpointHealthState.oneclickReady)}</span>
+        <span class="drift-badge">network: ${tunnelLabel(apiBase)}</span>
+        <span class="drift-badge">checked: ${checkedAt}</span>
+      </div>
+      <div class="mini" style="margin-top:6px">target: <span class="mono">${route}</span></div>
+      ${endpointHealthState.detail ? `<div class="mini" style="margin-top:4px">detail: ${endpointHealthState.detail}</div>` : ''}
+    `;
+  }
+
+  async function probeEndpointHealth() {
+    const next = { apiHealth: 'unknown', oneclickReady: 'unknown', lastCheckedAt: Date.now(), detail: '' };
+    try {
+      const rh = await fetch(apiUrl('/health'));
+      if (rh.ok) {
+        next.apiHealth = 'healthy';
+        next.oneclickReady = 'healthy';
+      } else {
+        next.apiHealth = 'degraded';
+        next.oneclickReady = 'degraded';
+        next.detail = `health status ${rh.status}`;
+      }
+    } catch (e) {
+      next.apiHealth = 'down';
+      next.oneclickReady = 'down';
+      next.detail = e?.message || 'network error';
+    }
+    endpointHealthState = next;
+    renderEndpointHealthPanel();
+    return next;
+  }
+
   async function testApiConnection(silent = false) {
     if (!silent) setButtonBusy('testApiBtn', true, '테스트중...');
     try {
@@ -632,13 +708,19 @@
 
       if (ok) {
         refreshApiHint('연결됨 ✅');
+        endpointHealthState = { apiHealth: 'healthy', oneclickReady: 'healthy', lastCheckedAt: Date.now(), detail };
+        renderEndpointHealthPanel();
         if (!silent) alert('API 연결 성공 (' + detail + ')');
       } else {
         refreshApiHint('연결 실패 ❌');
+        endpointHealthState = { apiHealth: 'down', oneclickReady: 'down', lastCheckedAt: Date.now(), detail: '주소 또는 CORS 설정 확인 필요' };
+        renderEndpointHealthPanel();
         if (!silent) alert('API 연결 실패: 주소 또는 CORS 설정 확인 필요');
       }
     } catch (e) {
       refreshApiHint('연결 실패 ❌');
+      endpointHealthState = { apiHealth: 'down', oneclickReady: 'down', lastCheckedAt: Date.now(), detail: e?.message || String(e) };
+      renderEndpointHealthPanel();
       if (!silent) alert('API 연결 실패: ' + (e?.message || e));
     } finally {
       if (!silent) setButtonBusy('testApiBtn', false);
@@ -875,6 +957,29 @@
     box.style.display = 'block';
     const color = ok === true ? '#86efac' : (ok === false ? '#fca5a5' : '#9fb0d8');
     box.innerHTML += `<div style="color:${color};margin:2px 0">• ${msg}</div>`;
+  }
+
+  function renderRetryGuidance(error) {
+    const msg = String(error?.message || error || 'unknown').toLowerCase();
+    const isTimeout = msg.includes('abort') || msg.includes('timeout');
+    const isNetwork = msg.includes('network') || msg.includes('failed to fetch') || msg.includes('cors');
+    const hint = document.getElementById('oneClickProgress');
+    if (!hint) return;
+    const lines = isTimeout
+      ? [
+          '요청 타임아웃: 외부 터널 지연 가능성이 높습니다.',
+          '재시도 가이드: ① 연결 테스트 → ② API 주소 재확인 → ③ 10~20초 후 재실행',
+        ]
+      : isNetwork
+      ? [
+          '네트워크/CORS 오류: 터널 endpoint 또는 백엔드가 응답하지 않았습니다.',
+          '재시도 가이드: ① 터널 URL 갱신 후 API 주소 저장 ② 연결 테스트 성공 확인 ③ 원클릭 재실행',
+        ]
+      : [
+          '실행 실패: 백엔드 상세 오류를 확인하세요.',
+          '재시도 가이드: Logs/Raw에서 오류 확인 후 연결 테스트를 다시 수행하세요.',
+        ];
+    hint.innerHTML += `<div class="advisory-item warn" style="margin-top:8px"><b>Retry Guidance</b><ul class="retry-list">${lines.map(x => `<li>${x}</li>`).join('')}</ul></div>`;
   }
 
   async function executeChecklistBatches(allRows, opts, batchSize = 20) {
@@ -1422,6 +1527,17 @@
       <span class="summary-chip">Evidence ${(Number(completeness.evidenceCoverage || 0) * 100).toFixed(0)}%</span>` : '';
 
     const evidenceMissingCount = Number(data.evidenceMissingCount || 0);
+    const classifyChainTriage = (status) => {
+      const normalized = safeText(status).trim().toUpperCase();
+      if (!normalized || normalized === 'UNKNOWN' || normalized === 'MISSING' || normalized === 'NONE' || normalized === 'N/A' || normalized === '-') return 'MISSING';
+      if (normalized.includes('BLOCK')) return 'BLOCKED';
+      return 'OK';
+    };
+    const chainTriageCounts = (Array.isArray(data.rows) ? data.rows : []).reduce((acc, row) => {
+      const key = classifyChainTriage(row?.chainStatus);
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, { MISSING: 0, BLOCKED: 0, OK: 0 });
     const evidenceWarning = evidenceMissingCount > 0
       ? `<div class="decomp-card decomp-warning" style="margin-top:8px"><div style="font-weight:600">⚠️ Evidence 누락 경고 (${evidenceMissingCount}건)</div><ul class="decomp-evidence-list">${(data.evidenceMissingTop || []).map((x) => `<li><span class="code-chip mono">${safeText(x.code)}</span> ${safeText(x.screen)} > ${safeText(x.section)} > ${safeText(x.scenario)}</li>`).join('') || '<li>(샘플 없음)</li>'}</ul></div>`
       : '';
@@ -1466,6 +1582,7 @@
         <select id="decompErrorSelect"><option value="">모든 error code</option>${Array.from(new Set(data.rows.map((row) => safeText(row.error || '').trim()).filter(Boolean))).sort().map((code) => `<option value="${encodeURIComponent(code)}">${safeText(code)}</option>`).join('')}</select>
         <select id="decompChainStatusSelect"><option value="">모든 ChainStatus</option>${Array.from(new Set(data.rows.map((row) => safeText(row.chainStatus || '').trim()).filter(Boolean))).sort().map((status) => `<option value="${encodeURIComponent(status)}">${safeText(status)}</option>`).join('')}</select>
         <select id="decompEvidenceSelect"><option value="ALL">증거 전체</option><option value="MISSING">증거 누락만</option><option value="HAS">증거 있는 행만</option></select>
+        <select id="decompChainTriageSelect"><option value="ALL">Chain triage 전체</option><option value="MISSING">Chain missing만</option><option value="BLOCKED">Chain blocked만</option><option value="OK">Chain 정상만</option></select>
         <select id="decompSortSelect"><option value="idx:asc">정렬: 원본순</option><option value="screen:asc">Screen 오름차순</option><option value="section:asc">Section 오름차순</option><option value="field:asc">Field 오름차순</option><option value="action:asc">Action 오름차순</option><option value="assertion:asc">Assertion 오름차순</option><option value="error:desc">ErrorCode 내림차순</option><option value="error:asc">ErrorCode 오름차순</option><option value="chainStatus:asc">ChainStatus 오름차순</option><option value="chainStatus:desc">ChainStatus 내림차순</option><option value="evidence:asc">Evidence 오름차순</option><option value="evidence:desc">Evidence 내림차순</option></select>
         <select id="decompPageSize"><option value="20">20행</option><option value="40" selected>40행</option><option value="80">80행</option></select>
         <button id="decompPrevBtn" class="btn secondary" type="button">이전</button>
@@ -1476,7 +1593,12 @@
       <div class="decomp-quick-filters">
         ${(data.code || []).slice(0, 5).map((row) => `<button class="quick-filter-chip" data-kind="error" data-value="${encodeURIComponent(safeText(row.name || ''))}" type="button">ErrorCode: ${safeText(row.name || '-')} (${safeText(row.count || 0)})</button>`).join('')}
         ${(data.chainStatus || []).slice(0, 5).map((row) => `<button class="quick-filter-chip" data-kind="chain" data-value="${encodeURIComponent(safeText(row.name || ''))}" type="button">ChainStatus: ${safeText(row.name || '-')} (${safeText(row.count || 0)})</button>`).join('')}
+        ${(chainTriageCounts.MISSING > 0) ? `<button class="quick-filter-chip" data-kind="triage" data-value="MISSING" type="button">Chain triage: MISSING (${chainTriageCounts.MISSING})</button>` : ''}
+        ${(chainTriageCounts.BLOCKED > 0) ? `<button class="quick-filter-chip" data-kind="triage" data-value="BLOCKED" type="button">Chain triage: BLOCKED (${chainTriageCounts.BLOCKED})</button>` : ''}
         ${(evidenceMissingCount > 0) ? `<button class="quick-filter-chip" data-kind="evidence" data-value="MISSING" type="button">Evidence: MISSING (${evidenceMissingCount})</button>` : ''}
+        <button class="quick-filter-chip" data-kind="action" data-value="TRIAGE_MISSING_CHAIN" type="button">Quick triage: missing chain + evidence</button>
+        <button class="quick-filter-chip" data-kind="action" data-value="TRIAGE_BLOCKED_CHAIN" type="button">Quick triage: blocked chain rows</button>
+        <button class="quick-filter-chip" data-kind="action" data-value="RESET" type="button">Quick triage: reset</button>
       </div>
       <div class="decomp-row-wrap">
         <table class="decomp-row-table">
@@ -1499,6 +1621,7 @@
     const errorSelect = document.getElementById('decompErrorSelect');
     const chainStatusSelect = document.getElementById('decompChainStatusSelect');
     const evidenceSelect = document.getElementById('decompEvidenceSelect');
+    const chainTriageSelect = document.getElementById('decompChainTriageSelect');
     const sortSelect = document.getElementById('decompSortSelect');
     const pageSizeSelect = document.getElementById('decompPageSize');
     const prevBtn = document.getElementById('decompPrevBtn');
@@ -1508,7 +1631,7 @@
     const pageInfo = document.getElementById('decompPageInfo');
     const quickFilterButtons = Array.from(box.querySelectorAll('.quick-filter-chip'));
     const sortableHeaders = Array.from(box.querySelectorAll('.decomp-sortable'));
-    if (!filterInput || !screenSelect || !sectionSelect || !errorSelect || !chainStatusSelect || !evidenceSelect || !sortSelect || !pageSizeSelect || !prevBtn || !nextBtn || !body || !rowCount || !pageInfo) return;
+    if (!filterInput || !screenSelect || !sectionSelect || !errorSelect || !chainStatusSelect || !evidenceSelect || !chainTriageSelect || !sortSelect || !pageSizeSelect || !prevBtn || !nextBtn || !body || !rowCount || !pageInfo) return;
 
     const rows = data.rows.slice(0, 1500).map((row, idx) => ({ ...row, __idx: idx }));
     let filtered = rows;
@@ -1540,6 +1663,7 @@
       const codeFilter = decodeURIComponent(String(errorSelect.value || ''));
       const chainFilter = decodeURIComponent(String(chainStatusSelect.value || ''));
       const evidenceFilter = String(evidenceSelect.value || 'ALL');
+      const triageFilter = String(chainTriageSelect.value || 'ALL').toUpperCase();
       const matched = rows.filter((row) => {
         if (screenFilter && safeText(row.screen) !== screenFilter) return false;
         if (sectionFilter && safeText(row.section) !== sectionFilter) return false;
@@ -1547,6 +1671,7 @@
         if (chainFilter && safeText(row.chainStatus) !== chainFilter) return false;
         if (evidenceFilter === 'MISSING' && row.hasEvidence) return false;
         if (evidenceFilter === 'HAS' && !row.hasEvidence) return false;
+        if (triageFilter !== 'ALL' && classifyChainTriage(row.chainStatus) !== triageFilter) return false;
         if (!q) return true;
         const blob = `${safeText(row.screen)} ${safeText(row.section)} ${safeText(row.field)} ${safeText(row.action)} ${safeText(row.assertion)} ${safeText(row.error)} ${safeText(row.chainStatus)} ${safeText(row.evidence)}`.toLowerCase();
         return blob.includes(q);
@@ -1592,6 +1717,7 @@
     errorSelect.addEventListener('change', applyFilter);
     chainStatusSelect.addEventListener('change', applyFilter);
     evidenceSelect.addEventListener('change', applyFilter);
+    chainTriageSelect.addEventListener('change', applyFilter);
     sortSelect.addEventListener('change', () => {
       const [field, dir] = String(sortSelect.value || 'idx:asc').split(':');
       sortField = field || 'idx';
@@ -1606,6 +1732,33 @@
         if (kind === 'error') errorSelect.value = encodeURIComponent(value);
         if (kind === 'chain') chainStatusSelect.value = encodeURIComponent(value);
         if (kind === 'evidence') evidenceSelect.value = value || 'MISSING';
+        if (kind === 'triage') chainTriageSelect.value = value || 'ALL';
+        if (kind === 'action' && value === 'TRIAGE_MISSING_CHAIN') {
+          chainTriageSelect.value = 'MISSING';
+          evidenceSelect.value = 'MISSING';
+          sortSelect.value = 'chainStatus:asc';
+          sortField = 'chainStatus';
+          sortDir = 'asc';
+        }
+        if (kind === 'action' && value === 'TRIAGE_BLOCKED_CHAIN') {
+          chainTriageSelect.value = 'BLOCKED';
+          evidenceSelect.value = 'ALL';
+          sortSelect.value = 'error:desc';
+          sortField = 'error';
+          sortDir = 'desc';
+        }
+        if (kind === 'action' && value === 'RESET') {
+          screenSelect.value = '';
+          sectionSelect.value = '';
+          errorSelect.value = '';
+          chainStatusSelect.value = '';
+          evidenceSelect.value = 'ALL';
+          chainTriageSelect.value = 'ALL';
+          filterInput.value = '';
+          sortSelect.value = 'idx:asc';
+          sortField = 'idx';
+          sortDir = 'asc';
+        }
         quickFilterButtons.forEach((chip) => chip.classList.remove('active'));
         btn.classList.add('active');
         applyFilter();
