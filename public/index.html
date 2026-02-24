@@ -1434,7 +1434,7 @@
         <select id="decompErrorSelect"><option value="">모든 error code</option>${Array.from(new Set(data.rows.map((row) => safeText(row.error || '').trim()).filter(Boolean))).sort().map((code) => `<option value="${encodeURIComponent(code)}">${safeText(code)}</option>`).join('')}</select>
         <select id="decompChainStatusSelect"><option value="">모든 ChainStatus</option>${Array.from(new Set(data.rows.map((row) => safeText(row.chainStatus || '').trim()).filter(Boolean))).sort().map((status) => `<option value="${encodeURIComponent(status)}">${safeText(status)}</option>`).join('')}</select>
         <select id="decompEvidenceSelect"><option value="ALL">증거 전체</option><option value="MISSING">증거 누락만</option><option value="HAS">증거 있는 행만</option></select>
-        <select id="decompSortSelect"><option value="idx:asc">정렬: 원본순</option><option value="error:desc">ErrorCode 많은순</option><option value="error:asc">ErrorCode 적은순</option><option value="chainStatus:asc">ChainStatus 오름차순</option><option value="chainStatus:desc">ChainStatus 내림차순</option><option value="evidence:asc">Evidence 오름차순</option><option value="evidence:desc">Evidence 내림차순</option></select>
+        <select id="decompSortSelect"><option value="idx:asc">정렬: 원본순</option><option value="screen:asc">Screen 오름차순</option><option value="section:asc">Section 오름차순</option><option value="field:asc">Field 오름차순</option><option value="action:asc">Action 오름차순</option><option value="assertion:asc">Assertion 오름차순</option><option value="error:desc">ErrorCode 내림차순</option><option value="error:asc">ErrorCode 오름차순</option><option value="chainStatus:asc">ChainStatus 오름차순</option><option value="chainStatus:desc">ChainStatus 내림차순</option><option value="evidence:asc">Evidence 오름차순</option><option value="evidence:desc">Evidence 내림차순</option></select>
         <select id="decompPageSize"><option value="20">20행</option><option value="40" selected>40행</option><option value="80">80행</option></select>
         <button id="decompPrevBtn" class="btn secondary" type="button">이전</button>
         <button id="decompNextBtn" class="btn secondary" type="button">다음</button>
@@ -1481,22 +1481,42 @@
     let sortField = 'idx';
     let sortDir = 'asc';
 
+    const applySort = (arr) => {
+      const list = arr.slice();
+      const readVal = (row) => {
+        if (sortField === 'idx') return Number(row.__idx || 0);
+        if (sortField === 'evidence') return row.hasEvidence ? 1 : 0;
+        return String(row[sortField] || '').toLowerCase();
+      };
+      list.sort((a, b) => {
+        const av = readVal(a);
+        const bv = readVal(b);
+        if (av < bv) return sortDir === 'asc' ? -1 : 1;
+        if (av > bv) return sortDir === 'asc' ? 1 : -1;
+        return Number(a.__idx || 0) - Number(b.__idx || 0);
+      });
+      return list;
+    };
+
     const applyFilter = () => {
       const q = String(filterInput.value || '').trim().toLowerCase();
       const screenFilter = decodeURIComponent(String(screenSelect.value || ''));
       const sectionFilter = decodeURIComponent(String(sectionSelect.value || ''));
       const codeFilter = decodeURIComponent(String(errorSelect.value || ''));
+      const chainFilter = decodeURIComponent(String(chainStatusSelect.value || ''));
       const evidenceFilter = String(evidenceSelect.value || 'ALL');
-      filtered = rows.filter((row) => {
+      const matched = rows.filter((row) => {
         if (screenFilter && safeText(row.screen) !== screenFilter) return false;
         if (sectionFilter && safeText(row.section) !== sectionFilter) return false;
         if (codeFilter && safeText(row.error) !== codeFilter) return false;
+        if (chainFilter && safeText(row.chainStatus) !== chainFilter) return false;
         if (evidenceFilter === 'MISSING' && row.hasEvidence) return false;
         if (evidenceFilter === 'HAS' && !row.hasEvidence) return false;
         if (!q) return true;
-        const blob = `${safeText(row.screen)} ${safeText(row.section)} ${safeText(row.field)} ${safeText(row.action)} ${safeText(row.assertion)} ${safeText(row.error)} ${safeText(row.evidence)}`.toLowerCase();
+        const blob = `${safeText(row.screen)} ${safeText(row.section)} ${safeText(row.field)} ${safeText(row.action)} ${safeText(row.assertion)} ${safeText(row.error)} ${safeText(row.chainStatus)} ${safeText(row.evidence)}`.toLowerCase();
         return blob.includes(q);
       });
+      filtered = applySort(matched);
       page = 1;
       renderPage();
     };
@@ -1516,13 +1536,13 @@
 
       requestAnimationFrame(() => {
         if (!view.length) {
-          body.innerHTML = '<tr><td colspan="8" class="mini">조건에 맞는 행이 없습니다.</td></tr>';
+          body.innerHTML = '<tr><td colspan="9" class="mini">조건에 맞는 행이 없습니다.</td></tr>';
           return;
         }
         body.innerHTML = view.map((row, idx) => {
           const evidenceClass = row.hasEvidence ? '' : 'decomp-evidence-missing';
           const missingCue = row.hasEvidence ? '' : '<span class="decomp-missing-cue">MISSING</span>';
-          return `<tr><td>${start + idx + 1}</td><td>${safeText(row.screen)}</td><td>${safeText(row.section)}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono ${evidenceClass}">${safeText(row.evidence).slice(0, 240)}${missingCue}</td></tr>`;
+          return `<tr><td>${start + idx + 1}</td><td>${safeText(row.screen)}</td><td>${safeText(row.section)}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td><span class="code-chip mono">${safeText(row.chainStatus || 'UNKNOWN')}</span></td><td class="mono ${evidenceClass}">${safeText(row.evidence).slice(0, 240)}${missingCue}</td></tr>`;
         }).join('');
       });
     };
@@ -1535,7 +1555,40 @@
     screenSelect.addEventListener('change', applyFilter);
     sectionSelect.addEventListener('change', applyFilter);
     errorSelect.addEventListener('change', applyFilter);
+    chainStatusSelect.addEventListener('change', applyFilter);
     evidenceSelect.addEventListener('change', applyFilter);
+    sortSelect.addEventListener('change', () => {
+      const [field, dir] = String(sortSelect.value || 'idx:asc').split(':');
+      sortField = field || 'idx';
+      sortDir = (dir === 'desc') ? 'desc' : 'asc';
+      filtered = applySort(filtered);
+      renderPage();
+    });
+    quickFilterButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const kind = String(btn.dataset.kind || '');
+        const value = decodeURIComponent(String(btn.dataset.value || ''));
+        if (kind === 'error') errorSelect.value = encodeURIComponent(value);
+        if (kind === 'chain') chainStatusSelect.value = encodeURIComponent(value);
+        if (kind === 'evidence') evidenceSelect.value = value || 'MISSING';
+        quickFilterButtons.forEach((chip) => chip.classList.remove('active'));
+        btn.classList.add('active');
+        applyFilter();
+      });
+    });
+    sortableHeaders.forEach((th) => {
+      th.addEventListener('click', () => {
+        const field = String(th.dataset.sort || '').trim();
+        if (!field) return;
+        if (sortField === field) sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+        else { sortField = field; sortDir = 'asc'; }
+        sortSelect.value = `${sortField}:${sortDir}`;
+        sortableHeaders.forEach((el) => el.classList.remove('active'));
+        th.classList.add('active');
+        filtered = applySort(filtered);
+        renderPage();
+      });
+    });
     pageSizeSelect.addEventListener('change', () => { page = 1; renderPage(); });
     prevBtn.addEventListener('click', () => { if (page > 1) { page -= 1; renderPage(); } });
     nextBtn.addEventListener('click', () => {
