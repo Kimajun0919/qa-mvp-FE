@@ -922,6 +922,7 @@
       renderOpsStageProgress({ stages: { Analyze: 'done', Chain: 'done', Checklist: 'done', Execute: 'done', Sheet: 'done' } });
       autopilotStepDone('리포트/아티팩트 갱신 완료', []);
       await refreshAntiRegressionGate(j);
+      await refreshValidationLaneStatus(j);
       await refreshValidationDelta(j);
       alert('원클릭 전체 QA 완료');
     } catch (e) {
@@ -1461,18 +1462,24 @@
     const screenSelect = document.getElementById('decompScreenSelect');
     const sectionSelect = document.getElementById('decompSectionSelect');
     const errorSelect = document.getElementById('decompErrorSelect');
+    const chainStatusSelect = document.getElementById('decompChainStatusSelect');
     const evidenceSelect = document.getElementById('decompEvidenceSelect');
+    const sortSelect = document.getElementById('decompSortSelect');
     const pageSizeSelect = document.getElementById('decompPageSize');
     const prevBtn = document.getElementById('decompPrevBtn');
     const nextBtn = document.getElementById('decompNextBtn');
     const body = document.getElementById('decompRowBody');
     const rowCount = document.getElementById('decompRowCount');
     const pageInfo = document.getElementById('decompPageInfo');
-    if (!filterInput || !screenSelect || !sectionSelect || !errorSelect || !evidenceSelect || !pageSizeSelect || !prevBtn || !nextBtn || !body || !rowCount || !pageInfo) return;
+    const quickFilterButtons = Array.from(box.querySelectorAll('.quick-filter-chip'));
+    const sortableHeaders = Array.from(box.querySelectorAll('.decomp-sortable'));
+    if (!filterInput || !screenSelect || !sectionSelect || !errorSelect || !chainStatusSelect || !evidenceSelect || !sortSelect || !pageSizeSelect || !prevBtn || !nextBtn || !body || !rowCount || !pageInfo) return;
 
-    const rows = data.rows.slice(0, 1500);
+    const rows = data.rows.slice(0, 1500).map((row, idx) => ({ ...row, __idx: idx }));
     let filtered = rows;
     let page = 1;
+    let sortField = 'idx';
+    let sortDir = 'asc';
 
     const applyFilter = () => {
       const q = String(filterInput.value || '').trim().toLowerCase();
