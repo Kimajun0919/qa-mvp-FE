@@ -70,6 +70,13 @@ function normalizeUrl(input: string, base: string) {
   return u;
 }
 
+function canonicalPathKey(pathName: string) {
+  const p = pathName.length > 1 && pathName.endsWith('/') ? pathName.slice(0, -1) : pathName;
+  // MyPage children are commonly redirected aliases; treat as one canonical route cluster.
+  if (p === '/mypage' || p.startsWith('/mypage/')) return '/mypage';
+  return p;
+}
+
 export async function discoverSite(baseUrl: string, opts?: { maxPages?: number; maxDepth?: number }) {
   const maxPages = opts?.maxPages ?? 50;
   const maxDepth = opts?.maxDepth ?? 3;
@@ -97,7 +104,7 @@ export async function discoverSite(baseUrl: string, opts?: { maxPages?: number; 
       if (normalized.origin !== origin) continue;
       if (visitedUrl.has(normalized.toString())) continue;
 
-      const pathKey = normalized.pathname;
+      const pathKey = canonicalPathKey(normalized.pathname);
       if (seenPath.has(pathKey) && normalized.toString() !== baseUrl) {
         continue;
       }
@@ -121,7 +128,9 @@ export async function discoverSite(baseUrl: string, opts?: { maxPages?: number; 
 
         const hasPasswordInput = (await page.locator('input[type="password"]').count()) > 0;
         const loginKeyword = /login|signin|auth|account|dashboard|admin/.test(pageUrl.toLowerCase());
-        const redirectedToLogin = response ? response.url().toLowerCase().includes('login') : false;
+        const requestedPath = normalized.pathname.toLowerCase();
+        const responsePath = response ? new URL(response.url()).pathname.toLowerCase() : '';
+        const redirectedToLogin = Boolean(response) && requestedPath !== responsePath && responsePath.includes('login');
         const statusAuthGate = httpStatus === 401 || httpStatus === 403;
         const accessDeniedText = ((await page.locator('text=/access denied|forbidden|unauthorized|sign in required|members only/i').count()) ?? 0) > 0;
 
@@ -224,6 +233,7 @@ export async function discoverSite(baseUrl: string, opts?: { maxPages?: number; 
         // keep partial page record
       } finally {
         const pathName = new URL(pageUrl, baseUrl).pathname;
+        seenPath.add(canonicalPathKey(pathName));
         const role = classifyPageRole(pathName, title);
         const { score, tier } = scorePagePriority(role, authLikely, current.depth, httpStatus);
         pages.push({
@@ -344,7 +354,7 @@ function classifyPageRole(pathName: string, title: string): PageRole {
   if (/support|help|faq|contact/.test(s)) return 'SUPPORT';
   if (/login|signin|auth/.test(s)) return 'LOGIN';
   if (/signup|register|join/.test(s)) return 'SIGNUP';
-  if (/dashboard|admin|workspace|console/.test(s)) return 'DASHBOARD';
+  if (/dashboard|admin|workspace|console|mypage/.test(s)) return 'DASHBOARD';
   if (/checkout|cart|payment|billing/.test(s)) return 'CHECKOUT';
   return 'OTHER';
 }
