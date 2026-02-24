@@ -36,6 +36,13 @@
     button { cursor: pointer; }
     .btn { background: var(--brand); border-color: #6158ff; }
     .btn.secondary { background: #1d2848; }
+    .btn.ghost { background: transparent; border-color: #2e3f68; color: #c6d5fb; }
+    .btn.danger { background: rgba(239,68,68,.15); border-color: rgba(239,68,68,.45); color: #fecaca; }
+    .advanced-section { margin-top:10px; border:1px solid #2e3f68; border-radius:10px; padding:10px; background:#0b1329; }
+    .advanced-section h4 { margin:0 0 6px 0; font-size:13px; color:#c6d5fb; }
+    .field-stack { display:grid; gap:8px; }
+    .help { font-size:12px; color: var(--muted); }
+    .action-group { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; padding:8px; background:#0f162c; }
     .hero { margin-bottom: 12px; }
     .hero h1 { margin: 0; font-size: 26px; }
     .step-guide { margin: 6px 0 0 0; color: var(--muted); font-size: 13px; }
@@ -207,22 +214,39 @@
         </div>
       </div>
       <details class="disclosure advanced-only" style="grid-column:1 / -1">
-        <summary>고급 설정 보기</summary>
-        <div class="row" style="margin-top:8px">
-          <input id="llmProviders" type="text" placeholder="LLM 우선순위 (예: ollama,openai)" value="ollama,openai" />
-          <input id="llmModel" type="text" placeholder="모델명" value="qwen2.5:0.5b" />
-          <button id="setApiBaseBtn" class="btn secondary">API 주소</button>
-          <button id="testApiBtn" class="btn secondary">연결 테스트</button>
+        <summary>고급 설정 보기 (LLM/API/OAuth/헬스)</summary>
+
+        <div class="advanced-section">
+          <h4>1) LLM + API 연결</h4>
+          <div class="help">기본값은 <span class="mono">ollama,openai</span> + <span class="mono">qwen2.5:0.5b</span> 입니다.</div>
+          <div class="row" style="margin-top:8px">
+            <input id="llmProviders" type="text" placeholder="LLM 우선순위 (예: ollama,openai)" value="ollama,openai" />
+            <input id="llmModel" type="text" placeholder="모델명 (예: qwen2.5:0.5b)" value="qwen2.5:0.5b" />
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button id="setApiBaseBtn" class="btn secondary">API 주소 설정</button>
+            <button id="testApiBtn" class="btn">연결 테스트 실행</button>
+          </div>
         </div>
-        <div class="row" style="margin-top:8px">
-          <span class="muted">OpenAI 인증</span>
-          <select id="openaiAuthMode"><option value="env" selected>env 사용</option><option value="apiKey">API Key 직접입력</option><option value="oauthToken">OAuth Token 입력</option></select>
-          <input id="openaiCredential" type="password" placeholder="API Key 또는 OAuth Token" style="min-width:280px" />
-          <button id="oauthLoginBtn" class="btn secondary">OpenAI 로그인</button>
-          <button id="oauthStatusBtn" class="btn secondary">OAuth 상태</button>
-          <button id="oauthLogoutBtn" class="btn secondary">OAuth 로그아웃</button>
-        </div>
-        <div id="endpointHealthPanel" class="validation-delta-panel" style="margin-top:8px; display:none"></div>
+
+        <details class="action-group">
+          <summary>2) OpenAI 인증 / OAuth (필요 시만)</summary>
+          <div class="field-stack" style="margin-top:8px">
+            <label class="help" for="openaiAuthMode">인증 모드</label>
+            <select id="openaiAuthMode"><option value="env" selected>env 사용 (권장)</option><option value="apiKey">API Key 직접입력</option><option value="oauthToken">OAuth Token 입력</option></select>
+            <input id="openaiCredential" type="password" placeholder="API Key 또는 OAuth Token" style="min-width:280px" />
+            <div class="row">
+              <button id="oauthLoginBtn" class="btn secondary">OpenAI 로그인</button>
+              <button id="oauthStatusBtn" class="btn ghost">OAuth 상태 확인</button>
+              <button id="oauthLogoutBtn" class="btn danger">OAuth 로그아웃</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="action-group">
+          <summary>3) Endpoint Health (문제 있을 때 확인)</summary>
+          <div id="endpointHealthPanel" class="validation-delta-panel" style="margin-top:8px; display:none"></div>
+        </details>
       </details>
     </div>
     <div class="muted" id="apiBaseHint" style="margin-top:8px">API: same-origin (현재 도메인)</div>
@@ -268,34 +292,54 @@
           </div>
         </details>
         <div class="row">
-          <label class="advanced-only"><input id="checkAuth" type="checkbox" /> 비로그인 접근 제어 포함</label>
-          <label class="advanced-only"><input id="autoByMenu" type="checkbox" /> 메뉴맵 기준 URL 사용</label>
           <label><input id="execExhaustive" type="checkbox" /> 전수검사(느리지만 상세)</label>
-          <label class="advanced-only"><input id="allowRiskyActions" type="checkbox" /> 위험액션 허용</label>
-          <button id="checkBtn" class="btn secondary advanced-only">단일 체크리스트 생성</button>
-          <button id="autoCheckBtn" class="btn secondary advanced-only">전체 자동생성(사이트맵/메뉴맵)</button>
-          <button id="execBtn" class="btn secondary advanced-only">체크리스트 실행</button>
-          <button id="finalizeBtn" class="btn secondary advanced-only">최종시트 생성</button>
         </div>
-        <div class="row advanced-only" style="margin-top:6px">
-          <input id="exhaustiveDepth" type="number" min="0" max="2" value="1" style="width:120px" placeholder="전수 깊이" />
-          <input id="exhaustiveBudgetMs" type="number" min="1000" step="1000" value="20000" style="width:160px" placeholder="전수 예산(ms)" />
-          <span class="muted">권장: 깊이 1, 예산 20000ms</span>
-        </div>
-        <div class="row advanced-only" style="margin-top:6px">
-          <button id="loadTemplatesBtn" class="btn secondary">전이 템플릿 불러오기</button>
-          <select id="transitionTemplate" style="min-width:240px"><option value="">템플릿 선택</option></select>
-          <button id="runTransitionBtn" class="btn secondary">전이검증 실행</button>
-          <button id="conditionMatrixBtn" class="btn secondary">조건매트릭스 미리보기</button>
-          <button id="analysisReloadBtn" class="btn secondary">분석 재조회</button>
-          <button id="flowMapBtn" class="btn secondary">Flow Map 생성</button>
-          <button id="structureMapBtn" class="btn secondary">Structure Map 생성</button>
-          <button id="flowsRunBtn" class="btn secondary">Flows 실행</button>
-          <button id="flowsFinalizeBtn" class="btn secondary">Flows 확정</button>
-        </div>
-        <div class="sheet-panel advanced-only">
-          <div style="font-weight:700">Google Sheets 연동 (고급)</div>
-          <div class="mini" style="margin-top:4px">pull-only 동기화 상태 확인/실행 및 시트 스키마 검증 결과를 조회합니다.</div>
+
+        <details class="advanced-only disclosure" style="margin-top:8px">
+          <summary>실행 옵션 + 체크리스트 액션</summary>
+          <div class="advanced-section" style="margin-top:8px">
+            <h4>실행 토글</h4>
+            <div class="row">
+              <label><input id="checkAuth" type="checkbox" /> 비로그인 접근 제어 포함</label>
+              <label><input id="autoByMenu" type="checkbox" /> 메뉴맵 기준 URL 사용</label>
+              <label><input id="allowRiskyActions" type="checkbox" /> 위험액션 허용</label>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <input id="exhaustiveDepth" type="number" min="0" max="2" value="1" style="width:120px" placeholder="전수 깊이" />
+              <input id="exhaustiveBudgetMs" type="number" min="1000" step="1000" value="20000" style="width:160px" placeholder="전수 예산(ms)" />
+              <span class="muted">권장 기본값: 깊이 1, 예산 20000ms</span>
+            </div>
+          </div>
+
+          <div class="action-group">
+            <div class="help" style="margin-bottom:6px">핵심 실행 순서</div>
+            <div class="row">
+              <button id="autoCheckBtn" class="btn">전체 자동생성(사이트맵/메뉴맵)</button>
+              <button id="execBtn" class="btn secondary">체크리스트 실행</button>
+              <button id="finalizeBtn" class="btn ghost">최종시트 생성</button>
+              <button id="checkBtn" class="btn ghost">단일 체크리스트 생성</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="advanced-only disclosure" style="margin-top:8px">
+          <summary>전이/맵/Flows 도구 (필요 시)</summary>
+          <div class="row" style="margin-top:8px">
+            <button id="loadTemplatesBtn" class="btn secondary">전이 템플릿 불러오기</button>
+            <select id="transitionTemplate" style="min-width:240px"><option value="">템플릿 선택</option></select>
+            <button id="runTransitionBtn" class="btn secondary">전이검증 실행</button>
+            <button id="conditionMatrixBtn" class="btn ghost">조건매트릭스 미리보기</button>
+            <button id="analysisReloadBtn" class="btn ghost">분석 재조회</button>
+            <button id="flowMapBtn" class="btn ghost">Flow Map 생성</button>
+            <button id="structureMapBtn" class="btn ghost">Structure Map 생성</button>
+            <button id="flowsRunBtn" class="btn secondary">Flows 실행</button>
+            <button id="flowsFinalizeBtn" class="btn ghost">Flows 확정</button>
+          </div>
+        </details>
+
+        <details class="sheet-panel advanced-only" style="margin-top:8px">
+          <summary style="cursor:pointer; font-weight:700">Google Sheets 연동 (고급, pull-only)</summary>
+          <div class="mini" style="margin-top:8px">동기화 상태 확인/실행 및 시트 스키마 검증 결과 조회.</div>
           <div class="sheet-grid">
             <input id="sheetsIntegrationId" type="text" placeholder="integrationId (선택)" />
             <input id="sheetsSyncJobId" type="text" placeholder="syncJobId (상태 조회용, 선택)" />
@@ -304,13 +348,13 @@
           </div>
           <div class="row" style="margin-top:8px">
             <button id="sheetsPullBtn" class="btn secondary">Pull 동기화 실행</button>
-            <button id="sheetsStatusBtn" class="btn secondary">동기화 상태 조회</button>
-            <button id="sheetsSchemaBtn" class="btn secondary">스키마 검증</button>
+            <button id="sheetsStatusBtn" class="btn ghost">동기화 상태 조회</button>
+            <button id="sheetsSchemaBtn" class="btn ghost">스키마 검증</button>
           </div>
           <div id="sheetsSyncSummary" class="muted" style="margin-top:6px">Sheets sync: 대기</div>
           <div id="sheetsSyncStatusBox" class="sheet-status-box mini" style="display:none"></div>
           <div id="sheetsSchemaBox" class="sheet-schema-box mini" style="display:none"></div>
-        </div>
+        </details>
         <div id="autoProgress" class="muted" style="margin-top:8px">자동생성 상태: 대기</div>
         <div id="advancedRunProgress" class="run-progress-card advanced-only" style="display:none">
           <div style="font-weight:700">실행 진행률</div>
