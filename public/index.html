@@ -119,6 +119,9 @@
     .decomp-toolbar input, .decomp-toolbar select { padding:6px 8px; font-size:12px; border-radius:8px; }
     .decomp-muted-chip { font-size:11px; color:var(--muted); }
     .decomp-evidence-missing { color:#fcd34d; background:rgba(245,158,11,.10); }
+    .decomp-missing-cue { display:inline-flex; margin-left:6px; font-size:10px; color:#fcd34d; border:1px solid rgba(245,158,11,.45); background:rgba(245,158,11,.12); border-radius:999px; padding:1px 6px; }
+    .decomp-group-list { margin:6px 0 0 0; padding-left:18px; }
+    .decomp-group-list li { margin:4px 0; font-size:12px; color:var(--muted); }
     .drift-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; color:#c6d5fb; margin:4px 6px 0 0; }
     .sheet-panel { margin-top:10px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
     .sheet-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:8px; }
@@ -954,6 +957,30 @@
     }, {});
   }
 
+  function normalizePriorityTier(raw) {
+    const txt = String(raw || '').trim().toUpperCase();
+    if (['P0', 'P1', 'P2', 'P3'].includes(txt)) return txt;
+    return null;
+  }
+
+  function inferDomainFromScreen(screen) {
+    const text = String(screen || '').trim();
+    if (!text || text === '-') return 'unknown-domain';
+    try {
+      const url = text.startsWith('http://') || text.startsWith('https://') ? new URL(text) : null;
+      if (url?.hostname) return url.hostname;
+    } catch (_) {}
+    const hostLike = text.match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+/i);
+    if (hostLike) return hostLike[0].toLowerCase();
+    return 'local-path';
+  }
+
+  function makeBoardDomainKey(screen, section) {
+    const domain = inferDomainFromScreen(screen);
+    const board = normalizeGroupLabel(section, '미분류').slice(0, 80);
+    return `${domain} · ${board}`;
+  }
+
   function normalizeDecompRows(payload) {
     const root = (payload && typeof payload === 'object') ? payload : {};
     const buckets = [
@@ -982,10 +1009,13 @@
       const action = normalizeDecompName(r.action || r['액션'] || r.stepAction || r.interaction || refs.action);
       const assertion = normalizeDecompName(r.assertion || r['검증'] || r.expectation || r.assert || refs.assert);
       const error = normalizeFailCode(r.errorCode || r.code || r.error || r['실패코드'] || refs.error);
+      const priority = normalizePriorityTier(r.priority || r.priorityTier || r.tier || r['우선순위'] || refs.priority);
       const evidenceRaw = String(r.evidence || r.message || r.reason || r['증거'] || refs.evidence || '').trim();
       const hasEvidence = Boolean(evidenceRaw);
       const evidence = hasEvidence ? evidenceRaw : '(증거 없음)';
-      return { screen, section, field, action, assertion, error, evidence, hasEvidence };
+      const domain = inferDomainFromScreen(screen);
+      const boardDomain = makeBoardDomainKey(screen, section);
+      return { screen, section, field, action, assertion, error, evidence, hasEvidence, priority, domain, boardDomain };
     }).filter((x) => x.field !== '-' || x.action !== '-' || x.assertion !== '-' || x.error !== 'UNKNOWN' || x.evidence !== '(증거 없음)');
   }
 
@@ -1099,10 +1129,13 @@
           r['검증'] || r['assertion'] || meta.assertion || meta.expectation || refs.assert || r['실패사유']
         );
         const error = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode || refs.error);
+        const priority = normalizePriorityTier(r['우선순위'] || r['priority'] || meta.priority || meta.priorityTier || refs.priority);
         const evidenceRaw = String(r['증거'] || meta.evidence || meta.error || refs.evidence || '').trim();
         const hasEvidence = Boolean(evidenceRaw);
+        const domain = inferDomainFromScreen(screen);
+        const boardDomain = makeBoardDomainKey(screen, section);
 
-        const row = { screen, section, field, action, assertion, error, evidence: evidenceRaw || '(증거 없음)', hasEvidence };
+        const row = { screen, section, field, action, assertion, error, evidence: evidenceRaw || '(증거 없음)', hasEvidence, priority, domain, boardDomain };
         pushStats(row);
 
         if (evidenceRows.length < 16 && (evidenceRaw || scenario)) {
@@ -1133,6 +1166,19 @@
     };
     completeness.overall = (completeness.fieldCoverage + completeness.actionCoverage + completeness.assertionCoverage + completeness.evidenceCoverage) / 4;
 
+    const boardDomainMap = {};
+    decompRows.forEach((row) => {
+      const key = row.boardDomain || makeBoardDomainKey(row.screen, row.section);
+      if (!boardDomainMap[key]) boardDomainMap[key] = { key, total: 0, p2: 0, missingEvidence: 0, domain: row.domain || inferDomainFromScreen(row.screen), board: row.section || '미분류' };
+      boardDomainMap[key].total += 1;
+      if ((row.priority || '').toUpperCase() === 'P2') boardDomainMap[key].p2 += 1;
+      if (!row.hasEvidence) boardDomainMap[key].missingEvidence += 1;
+    });
+    const p2BoardDomainGroups = Object.values(boardDomainMap)
+      .filter((g) => g.p2 > 0)
+      .sort((a, b) => (b.p2 - a.p2) || (b.missingEvidence - a.missingEvidence) || (b.total - a.total))
+      .slice(0, 8);
+
     return {
       total,
       field: byCountDesc(fieldCounts),
@@ -1144,6 +1190,7 @@
       evidence: evidenceRows,
       evidenceMissingCount,
       evidenceMissingTop: missingEvidenceRows.slice(0, 6).map((row) => ({ screen: row.screen, section: row.section, code: row.error, scenario: `${row.field} / ${row.action}` })),
+      p2BoardDomainGroups,
       rows: decompRows,
       density,
       completeness,
@@ -1201,6 +1248,9 @@
     const evidenceWarning = evidenceMissingCount > 0
       ? `<div class="decomp-card decomp-warning" style="margin-top:8px"><div style="font-weight:600">⚠️ Evidence 누락 경고 (${evidenceMissingCount}건)</div><ul class="decomp-evidence-list">${(data.evidenceMissingTop || []).map((x) => `<li><span class="code-chip mono">${safeText(x.code)}</span> ${safeText(x.screen)} > ${safeText(x.section)} > ${safeText(x.scenario)}</li>`).join('') || '<li>(샘플 없음)</li>'}</ul></div>`
       : '';
+    const p2BoardDomainGroups = Array.isArray(data.p2BoardDomainGroups) ? data.p2BoardDomainGroups : [];
+    const p2BoardDomainBox = p2BoardDomainGroups.length
+      ? `<div class="decomp-card" style="margin-top:8px"><div style="font-weight:600">P2 Board-Domain 그룹 결과</div><ul class="decomp-group-list">${p2BoardDomainGroups.map((g) => `<li><span class="code-chip mono">P2 ${safeText(g.p2)}건</span> ${safeText(g.domain)} · ${safeText(g.board)} <span class="mini">(total ${safeText(g.total)}, evidence-missing ${safeText(g.missingEvidence)})</span></li>`).join('')}</ul></div>` : '';
 
     box.style.display = 'block';
     box.innerHTML = `
@@ -1208,6 +1258,7 @@
       <div class="mini" style="margin-top:4px">실패/차단 행을 화면·섹션·Field·Action·Assertion·Error·Evidence로 분해합니다. (고급 모드 전용)</div>
       <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span><span class="summary-chip">source: ${safeText(data.source || 'unknown')}</span>${densityBadges}${completenessBadges}</div>
       ${evidenceWarning}
+      ${p2BoardDomainBox}
       ${(topActionCodes.length ? `<div class="decomp-card" style="margin-top:8px"><div style="font-weight:600">즉시 조치 우선순위 (Top error code)</div><ul class="decomp-evidence-list">${actionChecklist}</ul></div>` : '')}
       <div class="decomp-summary-grid"> 
         ${meterList('Top Screens', data.screen || [])}
@@ -1307,7 +1358,8 @@
         }
         body.innerHTML = view.map((row, idx) => {
           const evidenceClass = row.hasEvidence ? '' : 'decomp-evidence-missing';
-          return `<tr><td>${start + idx + 1}</td><td>${safeText(row.screen)}</td><td>${safeText(row.section)}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono ${evidenceClass}">${safeText(row.evidence).slice(0, 240)}</td></tr>`;
+          const missingCue = row.hasEvidence ? '' : '<span class="decomp-missing-cue">MISSING</span>';
+          return `<tr><td>${start + idx + 1}</td><td>${safeText(row.screen)}</td><td>${safeText(row.section)}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono ${evidenceClass}">${safeText(row.evidence).slice(0, 240)}${missingCue}</td></tr>`;
         }).join('');
       });
     };
