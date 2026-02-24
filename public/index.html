@@ -655,7 +655,10 @@
       </div>
       <div class="mini" style="margin-top:6px">target: <span class="mono">${route}</span></div>
       ${endpointHealthState.detail ? `<div class="mini" style="margin-top:4px">detail: ${endpointHealthState.detail}</div>` : ''}
+      <div class="row" style="margin-top:8px"><button id="retryHealthBtn" class="btn secondary">Endpoint 재확인</button></div>
     `;
+    const retryBtn = document.getElementById('retryHealthBtn');
+    if (retryBtn) retryBtn.addEventListener('click', () => testApiConnection(false));
   }
 
   async function probeEndpointHealth() {
