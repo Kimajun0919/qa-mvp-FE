@@ -65,7 +65,7 @@
     .FAIL { background: rgba(239,68,68,.15); color: #fca5a5; }
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     th, td { border-bottom: 1px solid #233053; padding: 8px; text-align: left; font-size: 13px; }
-    th { color: var(--muted); font-weight: 600; }
+    th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background:#0f162c; z-index:1; }
     .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:10px; margin-top:8px; }
     .mini { font-size: 12px; color: var(--muted); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -153,6 +153,18 @@
     .run-progress-main { font-size:28px; font-weight:800; line-height:1.1; letter-spacing:.2px; }
     .run-progress-main .slash { color: var(--muted); margin:0 4px; font-weight:600; }
     .run-progress-meta { margin-top:6px; font-size:12px; color:var(--muted); }
+    .checklist-readable { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .checklist-readable-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:8px; }
+    .checklist-readable-kpi { border:1px solid #2e3f68; border-radius:8px; padding:8px; background:#101a36; }
+    .checklist-readable-kpi .v { font-size:18px; font-weight:700; }
+    .checklist-readable-kpi .k { margin-top:4px; font-size:11px; color:var(--muted); }
+    .checklist-preview-table td { vertical-align:top; }
+    .checklist-preview-table .scenario-cell { max-width:520px; white-space:pre-wrap; word-break:break-word; }
+    .status-clarity { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .status-clarity-head { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; }
+    .status-clarity-metrics { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+    .sheet-visibility-card { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .sheet-visibility-links { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
     .ops-stage-card { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
     .ops-stage-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:8px; }
     .ops-stage-pill { border:1px solid #2e3f68; border-radius:999px; padding:6px 8px; text-align:center; font-size:12px; color:var(--muted); background:#101a36; font-weight:600; }
@@ -190,7 +202,7 @@
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: repeat(2, minmax(0,1fr)); }
-      .decomp-grid, .decomp-summary-grid, .fine-bucket-grid, .retry-grid { grid-template-columns:1fr; }
+      .decomp-grid, .decomp-summary-grid, .fine-bucket-grid, .retry-grid, .checklist-readable-grid { grid-template-columns:1fr; }
     }
   </style>
 </head>
@@ -272,6 +284,11 @@
           <button id="openFixCsv" class="btn secondary">Fix CSV 열기</button>
           <button id="openFixXlsx" class="btn secondary">Fix XLSX 열기</button>
           <button id="copyTsv" class="btn secondary">체크리스트 TSV 복사</button>
+        </div>
+        <div id="sheetVisibilityCard" class="sheet-visibility-card">
+          <div style="font-weight:700">Fix/Completion 시트 가시성</div>
+          <div id="sheetVisibilitySummary" class="mini" style="margin-top:4px">시트 생성 대기</div>
+          <div id="sheetVisibilityLinks" class="sheet-visibility-links"></div>
         </div>
       </section>
 
@@ -368,6 +385,7 @@
           <div id="opsStageMeta" class="ops-stage-meta">Analyze/Chain/Checklist/Execute/Sheet</div>
         </div>
         <div id="execSummary" class="muted" style="margin-top:6px">실행 상태: 대기</div>
+        <div id="execStatusClarity" class="status-clarity" style="display:none"></div>
         <div id="opsBackendGuard" class="ops-guard advanced-only" style="display:none"></div>
         <div class="row advanced-only" style="margin-top:6px">
           <span class="muted">실패코드 필터</span>
@@ -395,6 +413,7 @@
         <div id="transitionSummary" class="muted" style="margin-top:6px">전이검증 상태: 대기</div>
         <div id="oneClickProgress" class="advisory-box" style="margin-top:8px; display:none"></div>
         <pre id="checkOut" style="margin-top:8px; max-height:210px">(생성 후 TSV 복사)</pre>
+        <div id="checklistReadableCard" class="checklist-readable" style="display:none"></div>
         <div id="fineChecklistBox" class="fine-checklist-box advanced-only" style="display:none"></div>
       </section>
     </div>
@@ -1175,6 +1194,7 @@
       lastReportJson = user.reportJson || lastReportJson;
       lastFixCsv = user.fixSheet?.csv || lastFixCsv;
       lastFixXlsx = user.fixSheet?.xlsx || lastFixXlsx;
+      renderSheetVisibility();
       document.getElementById('execSummary').textContent = `실행 상태(사용자): ${JSON.stringify(user.summary || {})} | (관리자): ${JSON.stringify(admin.summary || {})}`;
       refreshAutopilotArtifacts();
 
@@ -1241,6 +1261,7 @@
       if (auto.ok) {
         document.getElementById('checkOut').textContent = auto.tsv || '';
         lastChecklistTSV = auto.tsv || '';
+        renderChecklistReadable(lastChecklistTSV);
         const shots = (auto.pageResults || []).map(x => x?.screenshot?.screenshotPath).filter(Boolean);
         progress.textContent = `자동생성 상태: 3/3 완료 (페이지 ${auto.pagesAudited}, 스크린샷 성공 ${auto.screenshotOk ?? shots.length})`;
         alert(`자동 생성 완료: ${auto.pagesAudited}개 페이지\n스크린샷 성공 ${auto.screenshotOk ?? shots.length} / 실패 ${auto.screenshotFailed ?? Math.max(0, (auto.pagesAudited||0)-shots.length)}`);
@@ -1267,6 +1288,95 @@
       cols.forEach((c, i) => row[c] = vals[i] || '');
       return row;
     });
+  }
+
+  function renderChecklistReadable(tsvText) {
+    const card = document.getElementById('checklistReadableCard');
+    if (!card) return;
+    const rows = parseTSV(tsvText);
+    if (!rows.length) {
+      card.style.display = 'none';
+      card.innerHTML = '';
+      return;
+    }
+
+    const sectionCounts = rows.reduce((acc, row) => {
+      const key = String(row['구분'] || '기타').trim() || '기타';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const topSections = Object.entries(sectionCounts).sort((a,b)=>Number(b[1])-Number(a[1])).slice(0, 3);
+    const scenarioLenAvg = Math.round(rows.reduce((sum, row) => sum + String(row['테스트시나리오'] || '').length, 0) / rows.length);
+
+    card.style.display = 'block';
+    card.innerHTML = `
+      <div style="font-weight:700">체크리스트 가독성 요약</div>
+      <div class="checklist-readable-grid">
+        <div class="checklist-readable-kpi"><div class="v">${rows.length}</div><div class="k">총 시나리오</div></div>
+        <div class="checklist-readable-kpi"><div class="v">${Object.keys(sectionCounts).length}</div><div class="k">구분 수</div></div>
+        <div class="checklist-readable-kpi"><div class="v">${scenarioLenAvg}</div><div class="k">시나리오 평균 길이</div></div>
+        <div class="checklist-readable-kpi"><div class="v">${safeText(topSections[0]?.[0] || '-')}</div><div class="k">가장 많은 구분 (${topSections[0]?.[1] || 0}건)</div></div>
+      </div>
+      <div class="mini" style="margin-top:8px">미리보기 (상위 8개)</div>
+      <div class="table-wrap" style="margin-top:6px; max-height:220px;">
+        <table class="checklist-preview-table">
+          <thead><tr><th>#</th><th>화면/구분</th><th>테스트시나리오</th><th>확인</th></tr></thead>
+          <tbody>
+            ${rows.slice(0,8).map((row, idx) => `<tr><td class="mini">${idx+1}</td><td><div>${safeText(row['화면'] || '-')}</div><div class="mini">${safeText(row['구분'] || '-')}</div></td><td class="scenario-cell">${safeText(row['테스트시나리오'] || '-')}</td><td>${safeText(row['확인'] || '-')}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderExecStatusClarity(payload = null) {
+    const card = document.getElementById('execStatusClarity');
+    if (!card) return;
+    const root = (payload && typeof payload === 'object') ? payload : {};
+    const summary = (root.summary && typeof root.summary === 'object') ? root.summary : {};
+    const progress = (root.progress && typeof root.progress === 'object') ? root.progress : {};
+    const done = pickFirstNumber(progress.doneRows, progress.done_rows, lastRunProgress.completed, 0) || 0;
+    const total = pickFirstNumber(progress.totalRows, progress.total_rows, lastRunProgress.target, 0) || 0;
+    const status = String(root.status || root.finalStatus || '대기');
+    const updatedAt = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+
+    if (!Object.keys(root).length && !total && !done) {
+      card.style.display = 'none';
+      card.innerHTML = '';
+      return;
+    }
+
+    card.style.display = 'block';
+    card.innerHTML = `
+      <div class="status-clarity-head">
+        <div style="font-weight:700">실행 상태 클리어 뷰</div>
+        <span class="badge ${status === 'done' ? 'PASS' : (status === 'error' ? 'FAIL' : '')}">${safeText(status)}</span>
+      </div>
+      <div class="status-clarity-metrics">
+        <span class="ops-stage-badge">진행 ${done}/${total || '-'}</span>
+        <span class="ops-stage-badge ok">PASS ${summary.PASS || 0}</span>
+        <span class="ops-stage-badge fail">FAIL ${summary.FAIL || 0}</span>
+        <span class="ops-stage-badge">BLOCKED ${summary.BLOCKED || 0}</span>
+        <span class="ops-stage-badge">업데이트 ${updatedAt}</span>
+      </div>
+    `;
+  }
+
+  function renderSheetVisibility() {
+    const summaryEl = document.getElementById('sheetVisibilitySummary');
+    const linksEl = document.getElementById('sheetVisibilityLinks');
+    if (!summaryEl || !linksEl) return;
+    const items = [
+      { label: 'Fix CSV', path: lastFixCsv },
+      { label: 'Fix XLSX', path: lastFixXlsx },
+      { label: 'HTML 리포트', path: lastReportPath },
+      { label: 'JSON 리포트', path: lastReportJson },
+    ];
+    const ready = items.filter(x => x.path).length;
+    summaryEl.textContent = ready ? `생성 완료 아티팩트 ${ready}/${items.length}` : '시트/리포트 생성 대기';
+    linksEl.innerHTML = items.map((item) => item.path
+      ? `<a class="artifact-link" href="${fileUrl(item.path)}" target="_blank">${safeText(item.label)} 열기</a>`
+      : `<span class="artifact-link disabled">${safeText(item.label)} 대기</span>`).join('');
   }
 
   function normalizeBucketItems(raw) {
@@ -3258,6 +3368,7 @@
       if (j.ok) {
         lastFixCsv = j.finalSheet?.csv || lastFixCsv;
         lastFixXlsx = j.finalSheet?.xlsx || lastFixXlsx;
+        renderSheetVisibility();
         alert('최종시트 생성 완료');
       }
     } finally {
@@ -3299,6 +3410,7 @@
     setButtonBusy('execBtn', true, '실행중...');
     const summaryEl = document.getElementById('execSummary');
     summaryEl.textContent = '실행 상태: 체크리스트 실행 요청 중...';
+    renderExecStatusClarity({ status: 'running', progress: { doneRows: 0, totalRows: rows.length }, summary: { PASS: 0, FAIL: 0, BLOCKED: 0 } });
     hideOpsBackendGuard();
     resetAdvancedRunProgress();
     resetOpsStageProgress({ stages: { Execute: 'running', Checklist: 'done' }, completed: 0, target: rows.length });
@@ -3323,6 +3435,7 @@
         const done = (pg.doneRows != null) ? pg.doneRows : '-';
         const total = (pg.totalRows != null) ? pg.totalRows : '-';
         summaryEl.textContent = `실행 상태: ${st.status || 'running'} (job: ${jobId}) | 진행 ${done}/${total} (${pct})`;
+        renderExecStatusClarity(st);
         updateAdvancedRunProgress(st, { completed: pg.doneRows ?? pg.done_rows ?? null, target: pg.totalRows ?? pg.total_rows ?? rows.length });
         renderOpsStageProgress(extractOpsStagePayload(st, { completed: pg.doneRows ?? pg.done_rows ?? null, target: pg.totalRows ?? pg.total_rows ?? rows.length }));
         if (st.status === 'done' || st.status === 'error') {
@@ -3348,10 +3461,12 @@
         const un = c.untestedEstimate || {};
         const ex = (c.exhaustive || {}).probeSummary || {};
         summaryEl.textContent = `실행 상태: PASS ${s.PASS||0} / FAIL ${s.FAIL||0} / BLOCKED ${s.BLOCKED||0} | 미실행추정 버튼 ${un.buttons||0}, 링크 ${un.links||0}, 입력 ${un.inputs||0} | 전수추가 버튼 ${ex.buttons||0}, 입력 ${ex.inputs||0} | depth ${exhaustiveDepth}, budget ${exhaustiveBudgetMs}ms, risky ${allowRiskyActions?'on':'off'}`;
+        renderExecStatusClarity({ status: 'done', summary: s, progress: { doneRows: rows.length, totalRows: rows.length } });
       } else {
         updateAdvancedRunProgress(final, { completed: 0, target: rows.length });
         renderOpsStageProgress({ stages: { Execute: 'error' }, completed: 0, target: rows.length });
         summaryEl.textContent = `실행 상태: 실패 (${final.error || 'unknown'})`;
+        renderExecStatusClarity({ status: 'error', summary: final.summary || {}, progress: { doneRows: 0, totalRows: rows.length } });
         renderFailureCodeStats([]);
         renderRetryStatsPanel([], null);
         renderParityDriftPanel(final);
@@ -3367,6 +3482,7 @@
         showOpsBackendGuard('백엔드 연결이 불안정해 실행을 완료하지 못했습니다. (non-blocking)\nAPI 주소/연결 테스트를 확인한 뒤 다시 시도하세요.');
       }
       summaryEl.textContent = '실행 상태: 실패 (예외)';
+      renderExecStatusClarity({ status: 'error', summary: {}, progress: { doneRows: 0, totalRows: rows.length } });
       renderFailureCodeStats([]);
       renderRetryStatsPanel([], null);
       renderParityDriftPanel(null);
@@ -3394,6 +3510,7 @@
       })).json();
       document.getElementById('checkOut').textContent = j.ok ? j.tsv : JSON.stringify(j, null, 2);
       lastChecklistTSV = j.tsv || '';
+      renderChecklistReadable(lastChecklistTSV);
       renderFineChecklistBuckets(j);
       renderOpsStageProgress({ stages: { Checklist: j.ok ? 'done' : 'error' } });
     } finally {
@@ -3469,6 +3586,8 @@
     refreshApiHint();
     renderAutopilotCard();
     refreshAutopilotArtifacts();
+    renderSheetVisibility();
+    renderChecklistReadable(lastChecklistTSV || document.getElementById('checkOut').textContent || '');
     setTimeout(() => { testApiConnection(true).catch(() => {}); }, 200);
     setTimeout(() => { onLoadTemplates().catch(() => {}); }, 300);
   }
