@@ -152,6 +152,17 @@
     .chain-arrow { color:var(--muted); font-size:12px; }
     .chain-timeline { margin:8px 0 0 0; padding-left:18px; }
     .chain-timeline li { margin:4px 0; font-size:12px; color:var(--muted); }
+
+    .graph2d-wrap { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
+    .graph2d-layout { display:grid; grid-template-columns: 2fr 1fr; gap:10px; }
+    .graph2d-canvas { width:100%; height:360px; border:1px solid #2e3f68; border-radius:8px; background:radial-gradient(circle at 10% 0%, #1a2751, #0b1329 55%); }
+    .graph2d-side { border:1px solid #2e3f68; border-radius:8px; background:#101a36; padding:8px; font-size:12px; }
+    .graph2d-legend { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+    .graph2d-chip { font-size:11px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; }
+    @media (max-width: 980px) {
+      .graph2d-layout { grid-template-columns: 1fr; }
+      .graph2d-canvas { height:300px; }
+    }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
@@ -346,6 +357,7 @@
       <div class="tabs">
         <div class="tab active" data-tab="sitemap">Site Map</div>
         <div class="tab" data-tab="menu">Menu Map</div>
+        <div class="tab advanced-only" data-tab="interaction2d">Interaction Graph 2D</div>
         <div class="tab" data-tab="logs">Logs/Raw</div>
       </div>
 
@@ -361,6 +373,13 @@
           <thead><tr><th>Scope</th><th>Zone</th><th>Name</th><th>Href</th><th>Count</th></tr></thead>
           <tbody id="menuRows"></tbody>
         </table>
+      </div>
+
+
+      <div id="panel-interaction2d" class="panel advanced-only">
+        <div id="interactionGraph2d" class="graph2d-wrap">
+          <div class="mini">고급 모드에서 USER↔ADMIN handoff graph를 표시합니다.</div>
+        </div>
       </div>
 
       <div id="panel-logs" class="panel">
@@ -383,6 +402,8 @@
   let lastValidationLaneStatus = null;
   let lastAntiRegressionGate = null;
   let lastFineErrorDecomp = null;
+  let lastChainGraph = null;
+  let lastInteractionSelection = null;
   let autopilotDone = ['대기 중'];
   let autopilotActive = ['요청 대기'];
   let lastSheetsSyncStatus = null;
@@ -550,6 +571,17 @@
     renderAntiRegressionGatePanel(lastAntiRegressionGate);
     renderFineErrorDecompPanel(lastFineErrorDecomp);
     renderOpsStageProgress();
+    if (m !== 'advanced') {
+      const activeAdvancedTab = document.querySelector('.tab.advanced-only.active');
+      if (activeAdvancedTab) {
+        document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+        const fallbackTab = document.querySelector('.tab[data-tab="sitemap"]');
+        if (fallbackTab) fallbackTab.classList.add('active');
+        const fallbackPanel = document.getElementById('panel-sitemap');
+        if (fallbackPanel) fallbackPanel.classList.add('active');
+      }
+    }
   }
 
   function getApiBase() {
@@ -1456,7 +1488,10 @@
       ` : ''}
     `;
 
-    if (!(Array.isArray(data.rows) && data.rows.length)) return;
+    if (!(Array.isArray(data.rows) && data.rows.length)) {
+      renderInteractionGraph2D(lastChainGraph, []);
+      return;
+    }
 
     const filterInput = document.getElementById('decompFilterInput');
     const screenSelect = document.getElementById('decompScreenSelect');
@@ -1598,6 +1633,7 @@
     });
 
     applyFilter();
+    renderInteractionGraph2D(lastChainGraph, data.rows || []);
   }
 
 
@@ -2265,6 +2301,141 @@
     return await loadValidationDeltaFromPaths(payload || {});
   }
 
+
+  function chainColor(status) {
+    const s = String(status || 'UNKNOWN').toUpperCase();
+    if (s.includes('PASS') || s.includes('OK') || s.includes('DONE')) return '#16a34a';
+    if (s.includes('WARN') || s.includes('PENDING') || s.includes('RUN')) return '#f59e0b';
+    if (s.includes('FAIL') || s.includes('ERROR') || s.includes('BLOCK')) return '#ef4444';
+    return '#64748b';
+  }
+
+  function buildInteractionGraph(chain, decomp) {
+    const rows = Array.isArray(decomp) ? decomp.slice(0, 36) : [];
+    const nodes = [];
+    const edges = [];
+    const nodeMap = new Map();
+    const actors = Array.isArray(chain?.actors) && chain.actors.length ? chain.actors : ['USER', 'ADMIN'];
+
+    const inferActor = (screen, idx) => {
+      const t = String(screen || '').toLowerCase();
+      if (t.includes('admin') || t.includes('관리')) return 'ADMIN';
+      if (t.includes('user') || t.includes('사용자')) return 'USER';
+      return actors[idx % actors.length] || 'USER';
+    };
+
+    const getNode = (screen, section, idx, row) => {
+      const key = `${screen || '-'}::${section || '-'}`;
+      if (nodeMap.has(key)) return nodeMap.get(key);
+      const actor = inferActor(screen, idx);
+      const n = {
+        id: `n${nodeMap.size + 1}`,
+        key,
+        label: section && section !== '-' ? section : screen || '-',
+        sub: screen || '-',
+        actor,
+        chainStatus: row?.chainStatus || chain?.chainStatus || 'UNKNOWN',
+        errorCode: row?.error || 'UNKNOWN',
+        evidence: row?.evidence || '(증거 없음)',
+        handoffKey: chain?.handoffKey || null,
+      };
+      nodeMap.set(key, n); nodes.push(n); return n;
+    };
+
+    if (rows.length) {
+      let prev = null;
+      rows.forEach((r, idx) => {
+        const cur = getNode(r.screen, r.section, idx, r);
+        if (prev && prev.id !== cur.id) {
+          edges.push({ id: `e${edges.length+1}`, from: prev.id, to: cur.id, actor: cur.actor, chainStatus: r.chainStatus || chain?.chainStatus || 'UNKNOWN', handoffKey: chain?.handoffKey || null, errorCode: r.error || 'UNKNOWN', evidence: r.evidence || '(증거 없음)' });
+        }
+        prev = cur;
+      });
+    } else {
+      const fallback = [
+        { screen: 'USER', section: 'User Entry', chainStatus: chain?.chainStatus || 'UNKNOWN' },
+        { screen: 'ADMIN', section: 'Admin Review', chainStatus: chain?.chainStatus || 'UNKNOWN' },
+        { screen: 'USER', section: 'User Confirm', chainStatus: chain?.chainStatus || 'UNKNOWN' },
+      ];
+      let prev = null;
+      fallback.forEach((r, idx) => {
+        const cur = getNode(r.screen, r.section, idx, r);
+        if (prev) edges.push({ id:`e${edges.length+1}`, from: prev.id, to: cur.id, actor: cur.actor, chainStatus: r.chainStatus, handoffKey: chain?.handoffKey || null, errorCode:'UNKNOWN', evidence:'(증거 없음)' });
+        prev = cur;
+      });
+    }
+    return { nodes, edges };
+  }
+
+  function renderInteractionGraph2D(chain, decompRows) {
+    const box = document.getElementById('interactionGraph2d');
+    if (!box) return;
+    const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
+    if (uiMode !== 'advanced') {
+      box.innerHTML = '<div class="mini">고급 모드에서만 Interaction Graph 2D를 표시합니다.</div>';
+      return;
+    }
+
+    const graph = buildInteractionGraph(chain || lastChainGraph || null, decompRows || lastFineErrorDecomp?.rows || []);
+    lastChainGraph = chain || lastChainGraph;
+    const width = 900, height = 360, pad = 70;
+    const n = graph.nodes.length || 1;
+    const spacing = n > 1 ? (width - pad*2) / (n-1) : 0;
+    const pos = new Map(graph.nodes.map((node, i) => [node.id, { x: pad + spacing*i, y: (i % 2 ? 220 : 130) }]));
+
+    const edgeSvg = graph.edges.map((e) => {
+      const a = pos.get(e.from), b = pos.get(e.to);
+      if (!a || !b) return '';
+      const color = chainColor(e.chainStatus);
+      const mx = (a.x + b.x) / 2;
+      return `<path d="M ${a.x} ${a.y} C ${mx} ${a.y-55}, ${mx} ${b.y+55}, ${b.x} ${b.y}" stroke="${color}" stroke-width="2.5" fill="none" data-kind="edge" data-id="${e.id}" style="cursor:pointer;opacity:.9"/>`;
+    }).join('');
+
+    const nodeSvg = graph.nodes.map((node) => {
+      const p = pos.get(node.id); const color = chainColor(node.chainStatus);
+      return `<g data-kind="node" data-id="${node.id}" style="cursor:pointer"><rect x="${p.x-56}" y="${p.y-26}" width="112" height="52" rx="12" fill="#101a36" stroke="${color}" stroke-width="2"/><text x="${p.x}" y="${p.y-2}" text-anchor="middle" fill="#e8eefc" font-size="12" font-weight="700">${safeText(node.label).slice(0,20)}</text><text x="${p.x}" y="${p.y+14}" text-anchor="middle" fill="#9fb0d8" font-size="10">${safeText(node.actor)}</text></g>`;
+    }).join('');
+
+    const statusSet = Array.from(new Set(graph.edges.map((e) => String(e.chainStatus || 'UNKNOWN'))));
+    const detail = lastInteractionSelection || graph.edges[0] || graph.nodes[0] || null;
+    const detailHtml = detail ? `
+      <div><b>Actor</b>: ${safeText(detail.actor || '-')}</div>
+      <div><b>HandoffKey</b>: <span class="mono">${safeText(detail.handoffKey || 'N/A')}</span></div>
+      <div><b>ErrorCode</b>: <span class="code-chip mono">${safeText(detail.errorCode || 'UNKNOWN')}</span></div>
+      <div><b>Evidence</b>: <span class="mini">${safeText(detail.evidence || '(증거 없음)')}</span></div>
+      <div style="margin-top:6px"><b>ChainStatus</b>: <span class="code-chip">${safeText(detail.chainStatus || 'UNKNOWN')}</span></div>
+    ` : '<div class="mini">노드/엣지를 클릭해 상세를 확인하세요.</div>';
+
+    box.innerHTML = `
+      <div style="font-weight:700">Interaction Graph 2D (FigJam-style)</div>
+      <div class="mini" style="margin-top:4px">Nodes=pages/features, Edges=handoff links · USER↔ADMIN chain</div>
+      <div class="graph2d-layout">
+        <svg class="graph2d-canvas" viewBox="0 0 ${width} ${height}">${edgeSvg}${nodeSvg}</svg>
+        <div class="graph2d-side" id="graph2dDetail">${detailHtml}</div>
+      </div>
+      <div class="graph2d-legend">${statusSet.map((s)=>`<span class="graph2d-chip" style="border-color:${chainColor(s)};color:${chainColor(s)}">${safeText(s)}</span>`).join('')}</div>
+    `;
+
+    const byId = (arr, id) => (arr || []).find((x) => x.id === id) || null;
+    box.querySelectorAll('[data-kind]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const kind = el.getAttribute('data-kind');
+        const id = el.getAttribute('data-id');
+        const selected = kind === 'edge' ? byId(graph.edges, id) : byId(graph.nodes, id);
+        if (!selected) return;
+        lastInteractionSelection = selected;
+        const d = box.querySelector('#graph2dDetail');
+        if (d) d.innerHTML = `
+          <div><b>Actor</b>: ${safeText(selected.actor || '-')}</div>
+          <div><b>HandoffKey</b>: <span class="mono">${safeText(selected.handoffKey || 'N/A')}</span></div>
+          <div><b>ErrorCode</b>: <span class="code-chip mono">${safeText(selected.errorCode || 'UNKNOWN')}</span></div>
+          <div><b>Evidence</b>: <span class="mini">${safeText(selected.evidence || '(증거 없음)')}</span></div>
+          <div style="margin-top:6px"><b>ChainStatus</b>: <span class="code-chip">${safeText(selected.chainStatus || 'UNKNOWN')}</span></div>
+        `;
+      });
+    });
+  }
+
   function renderValidationLanePanel(data, payload = null) {
     const box = document.getElementById('validationLanePanel');
     if (!box) return;
@@ -2316,6 +2487,7 @@
 
     box.style.display = 'block';
     box.innerHTML = `${laneBlock}${chainBlock}<div class="mini" style="margin-top:6px">advanced 모드에서만 chain/handoff 시각화 노출</div>`;
+    renderInteractionGraph2D(chain, lastFineErrorDecomp?.rows || []);
   }
 
   function renderValidationDeltaPanel(data) {
@@ -2909,6 +3081,7 @@
 
   document.querySelectorAll('.tab').forEach(t => {
     t.addEventListener('click', () => {
+      if (t.style.display === 'none') return;
       document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
       document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
       t.classList.add('active');
