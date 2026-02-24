@@ -579,6 +579,7 @@
     renderAntiRegressionGatePanel(lastAntiRegressionGate);
     renderFineErrorDecompPanel(lastFineErrorDecomp);
     renderOpsStageProgress();
+    renderEndpointHealthPanel();
     if (m !== 'advanced') {
       const activeAdvancedTab = document.querySelector('.tab.advanced-only.active');
       if (activeAdvancedTab) {
@@ -1017,6 +1018,13 @@
     try {
       autopilotStart();
       resetOpsStageProgress({ stages: { Analyze: 'running' } });
+      stageLog('0/3 endpoint health 점검');
+      const health = await probeEndpointHealth();
+      if (health.apiHealth !== 'healthy') {
+        stageLog(`endpoint health 경고: ${health.detail || health.apiHealth}`, false);
+      } else {
+        stageLog('endpoint health 정상', true);
+      }
       stageLog('1/3 통합 oneclick(dual) 요청 시작');
       autopilotStepDone('원클릭 요청 전송', ['사용자 분석 진행 중', '관리자 분석 대기']);
       const j = await postJson('/api/oneclick', {
@@ -1056,6 +1064,8 @@
       }
 
       stageLog('3/3 완료', true);
+      endpointHealthState = { apiHealth: 'healthy', oneclickReady: 'healthy', lastCheckedAt: Date.now(), detail: 'dual oneclick completed' };
+      renderEndpointHealthPanel();
       renderOpsStageProgress({ stages: { Analyze: 'done', Chain: 'done', Checklist: 'done', Execute: 'done', Sheet: 'done' } });
       autopilotStepDone('리포트/아티팩트 갱신 완료', []);
       await refreshAntiRegressionGate(j);
@@ -1065,6 +1075,9 @@
     } catch (e) {
       autopilotStepDone('실행 실패: ' + (e?.message || e), ['오류 확인 필요']);
       stageLog('실패: ' + (e?.message || e), false);
+      endpointHealthState = { apiHealth: endpointHealthState.apiHealth, oneclickReady: 'degraded', lastCheckedAt: Date.now(), detail: e?.message || String(e) };
+      renderEndpointHealthPanel();
+      renderRetryGuidance(e);
       renderOpsStageProgress({ stages: { Execute: 'error' } });
       alert('원클릭 실패: ' + (e?.message || e));
     } finally {
@@ -2529,27 +2542,65 @@
       return;
     }
 
-    const graph = buildInteractionGraph(chain || lastChainGraph || null, decompRows || lastFineErrorDecomp?.rows || []);
+    const graphRaw = buildInteractionGraph(chain || lastChainGraph || null, decompRows || lastFineErrorDecomp?.rows || []);
     lastChainGraph = chain || lastChainGraph;
-    const width = 900, height = 360, pad = 70;
-    const n = graph.nodes.length || 1;
-    const spacing = n > 1 ? (width - pad*2) / (n-1) : 0;
-    const pos = new Map(graph.nodes.map((node, i) => [node.id, { x: pad + spacing*i, y: (i % 2 ? 220 : 130) }]));
+
+    const collapsed = interactionGraph2DState.collapsedScreens || new Set();
+    const hiddenNodeIds = new Set(graphRaw.nodes.filter((n) => collapsed.has(String(n.sub || '-'))).map((n) => n.id));
+    const graph = {
+      nodes: graphRaw.nodes.filter((n) => !hiddenNodeIds.has(n.id)),
+      edges: graphRaw.edges.filter((e) => !hiddenNodeIds.has(e.from) && !hiddenNodeIds.has(e.to)),
+    };
+
+    const width = 1400, height = 900;
+    const level = new Map();
+    const indeg = new Map(graph.nodes.map((n) => [n.id, 0]));
+    const out = new Map(graph.nodes.map((n) => [n.id, []]));
+    graph.edges.forEach((e) => {
+      indeg.set(e.to, (indeg.get(e.to) || 0) + 1);
+      out.get(e.from)?.push(e.to);
+    });
+    const q = graph.nodes.filter((n) => (indeg.get(n.id) || 0) === 0).map((n) => n.id);
+    q.forEach((id) => level.set(id, 0));
+    while (q.length) {
+      const cur = q.shift();
+      const nexts = out.get(cur) || [];
+      nexts.forEach((nx) => {
+        level.set(nx, Math.max(level.get(nx) || 0, (level.get(cur) || 0) + 1));
+        indeg.set(nx, (indeg.get(nx) || 1) - 1);
+        if ((indeg.get(nx) || 0) === 0) q.push(nx);
+      });
+    }
+
+    const laneY = { USER: 260, ADMIN: 620 };
+    const maxLevel = Math.max(1, ...Array.from(level.values()));
+    const pos = new Map(graph.nodes.map((node, i) => {
+      const lv = level.get(node.id) || 0;
+      const baseX = 120 + ((width - 240) * (lv / Math.max(1, maxLevel)));
+      const sameLevel = graph.nodes.filter((n) => (level.get(n.id) || 0) === lv && n.actor === node.actor);
+      const idx = sameLevel.findIndex((n) => n.id === node.id);
+      const jitter = (idx - (sameLevel.length - 1) / 2) * 76;
+      const y = (laneY[node.actor] || 440) + jitter;
+      return [node.id, { x: baseX, y }];
+    }));
 
     const edgeSvg = graph.edges.map((e) => {
       const a = pos.get(e.from), b = pos.get(e.to);
       if (!a || !b) return '';
       const color = chainColor(e.chainStatus);
       const mx = (a.x + b.x) / 2;
-      return `<path d="M ${a.x} ${a.y} C ${mx} ${a.y-55}, ${mx} ${b.y+55}, ${b.x} ${b.y}" stroke="${color}" stroke-width="2.5" fill="none" data-kind="edge" data-id="${e.id}" style="cursor:pointer;opacity:.9"/>`;
+      return `<path d="M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}" stroke="${color}" stroke-width="2.2" fill="none" data-kind="edge" data-id="${e.id}" style="cursor:pointer;opacity:.9"/>`;
     }).join('');
 
     const nodeSvg = graph.nodes.map((node) => {
       const p = pos.get(node.id); const color = chainColor(node.chainStatus);
-      return `<g data-kind="node" data-id="${node.id}" style="cursor:pointer"><rect x="${p.x-56}" y="${p.y-26}" width="112" height="52" rx="12" fill="#101a36" stroke="${color}" stroke-width="2"/><text x="${p.x}" y="${p.y-2}" text-anchor="middle" fill="#e8eefc" font-size="12" font-weight="700">${safeText(node.label).slice(0,20)}</text><text x="${p.x}" y="${p.y+14}" text-anchor="middle" fill="#9fb0d8" font-size="10">${safeText(node.actor)}</text></g>`;
+      const label = safeText(node.label || '-').slice(0, 28);
+      const w = Math.min(196, Math.max(112, label.length * 7 + 26));
+      return `<g data-kind="node" data-id="${node.id}" style="cursor:pointer"><title>${safeText(node.sub || '-')} / ${safeText(node.label || '-')}</title><rect x="${p.x-(w/2)}" y="${p.y-28}" width="${w}" height="56" rx="12" fill="#101a36" stroke="${color}" stroke-width="2"/><text x="${p.x}" y="${p.y-6}" text-anchor="middle" fill="#e8eefc" font-size="12" font-weight="700">${label}</text><text x="${p.x}" y="${p.y+12}" text-anchor="middle" fill="#9fb0d8" font-size="10">${safeText(node.actor)} · ${safeText(node.sub || '-').slice(0, 18)}</text></g>`;
     }).join('');
 
-    const statusSet = Array.from(new Set(graph.edges.map((e) => String(e.chainStatus || 'UNKNOWN'))));
+    const statusSet = Array.from(new Set(graphRaw.edges.map((e) => String(e.chainStatus || 'UNKNOWN'))));
+    const screens = Array.from(new Set(graphRaw.nodes.map((n) => String(n.sub || '-')))).slice(0, 60);
     const detail = lastInteractionSelection || graph.edges[0] || graph.nodes[0] || null;
     const detailHtml = detail ? `
       <div><b>Actor</b>: ${safeText(detail.actor || '-')}</div>
@@ -2557,19 +2608,66 @@
       <div><b>ErrorCode</b>: <span class="code-chip mono">${safeText(detail.errorCode || 'UNKNOWN')}</span></div>
       <div><b>Evidence</b>: <span class="mini">${safeText(detail.evidence || '(증거 없음)')}</span></div>
       <div style="margin-top:6px"><b>ChainStatus</b>: <span class="code-chip">${safeText(detail.chainStatus || 'UNKNOWN')}</span></div>
+      <div class="mini" style="margin-top:8px">Nodes ${graph.nodes.length}/${graphRaw.nodes.length} · Edges ${graph.edges.length}/${graphRaw.edges.length}</div>
     ` : '<div class="mini">노드/엣지를 클릭해 상세를 확인하세요.</div>';
 
     box.innerHTML = `
       <div style="font-weight:700">Interaction Graph 2D (FigJam-style)</div>
-      <div class="mini" style="margin-top:4px">Nodes=pages/features, Edges=handoff links · USER↔ADMIN chain</div>
+      <div class="mini" style="margin-top:4px">Wheel=Zoom · Drag=Pan · Large tree optimized lanes (USER/ADMIN)</div>
+      <div class="graph2d-toolbar" id="graph2dToolbar">
+        <button class="graph2d-btn" data-act="zoom-in">＋ Zoom</button>
+        <button class="graph2d-btn" data-act="zoom-out">－ Zoom</button>
+        <button class="graph2d-btn" data-act="fit">Fit</button>
+        <button class="graph2d-btn" data-act="reset">Reset</button>
+        <button class="graph2d-btn" data-act="expand-all">Expand all groups</button>
+        ${screens.map((s) => `<button class="graph2d-btn ${collapsed.has(s) ? 'active' : ''}" data-act="toggle-group" data-group="${safeText(s)}">${collapsed.has(s) ? '＋' : '－'} ${safeText(s).slice(0,16)}</button>`).join('')}
+        <span class="mini">Collapsed: ${collapsed.size}</span>
+      </div>
       <div class="graph2d-layout">
-        <svg class="graph2d-canvas" viewBox="0 0 ${width} ${height}">${edgeSvg}${nodeSvg}</svg>
+        <svg class="graph2d-canvas" viewBox="0 0 ${width} ${height}">
+          <g id="graph2dViewport" transform="translate(${interactionGraph2DState.tx} ${interactionGraph2DState.ty}) scale(${interactionGraph2DState.scale})">
+            <line x1="60" y1="${laneY.USER}" x2="${width-60}" y2="${laneY.USER}" stroke="#33406a" stroke-dasharray="6 6"/>
+            <line x1="60" y1="${laneY.ADMIN}" x2="${width-60}" y2="${laneY.ADMIN}" stroke="#33406a" stroke-dasharray="6 6"/>
+            <text x="70" y="${laneY.USER-10}" fill="#9fb0d8" font-size="12">USER lane</text>
+            <text x="70" y="${laneY.ADMIN-10}" fill="#9fb0d8" font-size="12">ADMIN lane</text>
+            ${edgeSvg}${nodeSvg}
+          </g>
+        </svg>
         <div class="graph2d-side" id="graph2dDetail">${detailHtml}</div>
       </div>
       <div class="graph2d-legend">${statusSet.map((s)=>`<span class="graph2d-chip" style="border-color:${chainColor(s)};color:${chainColor(s)}">${safeText(s)}</span>`).join('')}</div>
     `;
 
     const byId = (arr, id) => (arr || []).find((x) => x.id === id) || null;
+    const svg = box.querySelector('.graph2d-canvas');
+    const vp = box.querySelector('#graph2dViewport');
+    const applyTransform = () => {
+      if (vp) vp.setAttribute('transform', `translate(${interactionGraph2DState.tx} ${interactionGraph2DState.ty}) scale(${interactionGraph2DState.scale})`);
+    };
+    if (interactionGraph2DState.scale === 1 && interactionGraph2DState.tx === 0 && interactionGraph2DState.ty === 0) {
+      interactionGraph2DState.scale = Math.min(1, 1100 / Math.max(width, 1));
+      interactionGraph2DState.tx = 30;
+      interactionGraph2DState.ty = 40;
+      applyTransform();
+    }
+
+    let dragging = false, sx = 0, sy = 0;
+    svg?.addEventListener('mousedown', (e) => { dragging = true; sx = e.clientX; sy = e.clientY; svg.classList.add('dragging'); });
+    window.addEventListener('mouseup', () => { dragging = false; svg?.classList.remove('dragging'); }, { once: true });
+    svg?.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      interactionGraph2DState.tx += (e.clientX - sx);
+      interactionGraph2DState.ty += (e.clientY - sy);
+      sx = e.clientX; sy = e.clientY;
+      applyTransform();
+    });
+    svg?.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const k = e.deltaY < 0 ? 1.08 : 0.92;
+      interactionGraph2DState.scale = Math.min(2.5, Math.max(0.35, interactionGraph2DState.scale * k));
+      applyTransform();
+    }, { passive: false });
+
     box.querySelectorAll('[data-kind]').forEach((el) => {
       el.addEventListener('click', () => {
         const kind = el.getAttribute('data-kind');
@@ -2585,6 +2683,24 @@
           <div><b>Evidence</b>: <span class="mini">${safeText(selected.evidence || '(증거 없음)')}</span></div>
           <div style="margin-top:6px"><b>ChainStatus</b>: <span class="code-chip">${safeText(selected.chainStatus || 'UNKNOWN')}</span></div>
         `;
+      });
+    });
+
+    box.querySelectorAll('#graph2dToolbar [data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const act = btn.getAttribute('data-act');
+        if (act === 'zoom-in') interactionGraph2DState.scale = Math.min(2.5, interactionGraph2DState.scale * 1.15);
+        if (act === 'zoom-out') interactionGraph2DState.scale = Math.max(0.35, interactionGraph2DState.scale * 0.87);
+        if (act === 'fit') { interactionGraph2DState.scale = Math.min(1, 1100 / Math.max(width, 1)); interactionGraph2DState.tx = 30; interactionGraph2DState.ty = 40; }
+        if (act === 'reset') { interactionGraph2DState.scale = 1; interactionGraph2DState.tx = 0; interactionGraph2DState.ty = 0; interactionGraph2DState.collapsedScreens = new Set(); }
+        if (act === 'expand-all') interactionGraph2DState.collapsedScreens = new Set();
+        if (act === 'toggle-group') {
+          const g = String(btn.getAttribute('data-group') || '');
+          const s = interactionGraph2DState.collapsedScreens || new Set();
+          if (s.has(g)) s.delete(g); else s.add(g);
+          interactionGraph2DState.collapsedScreens = s;
+        }
+        renderInteractionGraph2D(lastChainGraph, decompRows || lastFineErrorDecomp?.rows || []);
       });
     });
   }
@@ -3194,7 +3310,9 @@
     const clean = String(next || '').trim().replace(/\/$/, '');
     if (clean) localStorage.setItem('QA_API_BASE', clean);
     else localStorage.removeItem('QA_API_BASE');
+    endpointHealthState = { apiHealth: 'unknown', oneclickReady: 'unknown', lastCheckedAt: null, detail: '' };
     refreshApiHint();
+    renderEndpointHealthPanel();
   });
 
   document.getElementById('openHtml').addEventListener('click', () => {
