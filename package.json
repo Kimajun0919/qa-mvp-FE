@@ -14,8 +14,12 @@
     "eval:discovery": "node scripts/preflight.mjs && tsx src/discovery/eval.ts",
     "ops:check": "bash ./scripts/ops_check.sh",
     "ops:deep": "bash ./scripts/deep_check.sh",
-    "postinstall": "npm rebuild better-sqlite3 --build-from-source || true",
-    "ops:split-check": "bash ./scripts/ops_split_check.sh"
+    "ops:split-check": "bash ./scripts/ops_split_check.sh",
+    "ci:guard": "bash ./scripts/ci_guard_fe.sh quick",
+    "ci:guard:split": "bash ./scripts/ci_guard_fe.sh split",
+    "ci:guard:deep": "bash ./scripts/ci_guard_fe.sh deep",
+    "ci:guard:all": "bash ./scripts/ci_guard_fe.sh all",
+    "postinstall": "npm rebuild better-sqlite3 --build-from-source || true"
   },
   "keywords": [],
   "author": "",
