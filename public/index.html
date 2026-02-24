@@ -989,11 +989,20 @@
       </div>`;
     };
 
+    const topActionCodes = (data.code || []).slice(0, 3);
+    const actionChecklist = topActionCodes.map((row) => {
+      const code = safeText(row?.name || 'UNKNOWN');
+      const hint = safeText(remediationHintFor(code));
+      const count = Number(row?.count || 0);
+      return `<li><span class="code-chip mono">${code}</span> (${count}건) · ${hint}</li>`;
+    }).join('');
+
     box.style.display = 'block';
     box.innerHTML = `
       <div style="font-weight:700">Fine-grained Error Decomposition</div>
       <div class="mini" style="margin-top:4px">실패/차단 행을 Field · Action · Assertion · Error-code · Evidence로 분해합니다. (고급 모드 전용)</div>
       <div class="delta-badge-row" style="margin-top:6px"><span class="summary-chip">대상 ${safeText(data.total)}건</span><span class="summary-chip">source: ${safeText(data.source || 'unknown')}</span></div>
+      ${(topActionCodes.length ? `<div class="decomp-card" style="margin-top:8px"><div style="font-weight:600">즉시 조치 우선순위 (Top error code)</div><ul class="decomp-evidence-list">${actionChecklist}</ul></div>` : '')}
       <div class="decomp-summary-grid">
         ${meterList('Top Fields', data.field || [])}
         ${meterList('Top Errors', data.code || [])}
@@ -1010,6 +1019,10 @@
       <div class="decomp-toolbar">
         <input id="decompFilterInput" type="text" placeholder="필드/액션/검증/에러/증거 검색" />
         <select id="decompErrorSelect"><option value="">모든 error code</option>${Array.from(new Set(data.rows.map((row) => safeText(row.error || '').trim()).filter(Boolean))).sort().map((code) => `<option value="${encodeURIComponent(code)}">${safeText(code)}</option>`).join('')}</select>
+        <select id="decompPageSize"><option value="20">20행</option><option value="40" selected>40행</option><option value="80">80행</option></select>
+        <button id="decompPrevBtn" class="btn secondary" type="button">이전</button>
+        <button id="decompNextBtn" class="btn secondary" type="button">다음</button>
+        <span class="decomp-muted-chip" id="decompPageInfo"></span>
         <span class="decomp-muted-chip" id="decompRowCount"></span>
       </div>
       <div class="decomp-row-wrap">
@@ -1018,7 +1031,7 @@
           <tbody id="decompRowBody"></tbody>
         </table>
       </div>
-      <div class="mini" style="margin-top:6px">executed decomposition rows source: backend (${data.rows.length}건)</div>
+      <div class="mini" style="margin-top:6px">executed decomposition rows source: backend (${data.rows.length}건, page 렌더링 적용)</div>
       ` : ''}
     `;
 
@@ -1026,28 +1039,70 @@
 
     const filterInput = document.getElementById('decompFilterInput');
     const errorSelect = document.getElementById('decompErrorSelect');
+    const pageSizeSelect = document.getElementById('decompPageSize');
+    const prevBtn = document.getElementById('decompPrevBtn');
+    const nextBtn = document.getElementById('decompNextBtn');
     const body = document.getElementById('decompRowBody');
     const rowCount = document.getElementById('decompRowCount');
-    if (!filterInput || !errorSelect || !body || !rowCount) return;
+    const pageInfo = document.getElementById('decompPageInfo');
+    if (!filterInput || !errorSelect || !pageSizeSelect || !prevBtn || !nextBtn || !body || !rowCount || !pageInfo) return;
 
-    const rows = data.rows.slice(0, 200);
-    const renderRows = () => {
+    const rows = data.rows.slice(0, 1500);
+    let filtered = rows;
+    let page = 1;
+
+    const applyFilter = () => {
       const q = String(filterInput.value || '').trim().toLowerCase();
       const codeFilter = decodeURIComponent(String(errorSelect.value || ''));
-      const filtered = rows.filter((row) => {
+      filtered = rows.filter((row) => {
         if (codeFilter && safeText(row.error) !== codeFilter) return false;
         if (!q) return true;
         const blob = `${safeText(row.field)} ${safeText(row.action)} ${safeText(row.assertion)} ${safeText(row.error)} ${safeText(row.evidence)}`.toLowerCase();
         return blob.includes(q);
       });
-      rowCount.textContent = `표시 ${filtered.length} / ${rows.length}건`;
-      body.innerHTML = filtered.slice(0, 80).map((row, idx) => `<tr><td>${idx + 1}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono">${safeText(row.evidence).slice(0, 240)}</td></tr>`).join('') || '<tr><td colspan="6" class="mini">조건에 맞는 행이 없습니다.</td></tr>';
+      page = 1;
+      renderPage();
     };
 
-    filterInput.addEventListener('input', renderRows);
-    errorSelect.addEventListener('change', renderRows);
-    renderRows();
+    const renderPage = () => {
+      const pageSize = Math.max(20, Number(pageSizeSelect.value || 40));
+      const total = filtered.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      if (page > totalPages) page = totalPages;
+      const start = (page - 1) * pageSize;
+      const view = filtered.slice(start, start + pageSize);
+
+      rowCount.textContent = `표시 ${view.length} / ${total}건`;
+      pageInfo.textContent = `page ${page}/${totalPages}`;
+      prevBtn.disabled = page <= 1;
+      nextBtn.disabled = page >= totalPages;
+
+      requestAnimationFrame(() => {
+        if (!view.length) {
+          body.innerHTML = '<tr><td colspan="6" class="mini">조건에 맞는 행이 없습니다.</td></tr>';
+          return;
+        }
+        body.innerHTML = view.map((row, idx) => `<tr><td>${start + idx + 1}</td><td>${safeText(row.field)}</td><td>${safeText(row.action)}</td><td>${safeText(row.assertion)}</td><td><span class="code-chip mono">${safeText(row.error)}</span></td><td class="mono">${safeText(row.evidence).slice(0, 240)}</td></tr>`).join('');
+      });
+    };
+
+    let filterTimer = null;
+    filterInput.addEventListener('input', () => {
+      if (filterTimer) clearTimeout(filterTimer);
+      filterTimer = setTimeout(applyFilter, 120);
+    });
+    errorSelect.addEventListener('change', applyFilter);
+    pageSizeSelect.addEventListener('change', () => { page = 1; renderPage(); });
+    prevBtn.addEventListener('click', () => { if (page > 1) { page -= 1; renderPage(); } });
+    nextBtn.addEventListener('click', () => {
+      const pageSize = Math.max(20, Number(pageSizeSelect.value || 40));
+      const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+      if (page < totalPages) { page += 1; renderPage(); }
+    });
+
+    applyFilter();
   }
+
 
   function safeText(v) {
     if (v == null) return '';
