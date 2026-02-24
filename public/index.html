@@ -146,6 +146,10 @@
     .ops-stage-pill.done { border-color:#16a34a; color:#86efac; background:rgba(22,163,74,.15); }
     .ops-stage-pill.error { border-color:#ef4444; color:#fca5a5; background:rgba(239,68,68,.15); }
     .ops-stage-meta { margin-top:8px; font-size:12px; color:var(--muted); }
+    .ops-stage-badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .ops-stage-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid #2e3f68; background:#101a36; font-size:11px; color:#c6d5fb; }
+    .ops-stage-badge.ok { border-color:#16a34a; color:#86efac; background:rgba(22,163,74,.15); }
+    .ops-stage-badge.fail { border-color:#ef4444; color:#fca5a5; background:rgba(239,68,68,.15); }
     .chain-panel { margin-top:8px; border:1px solid #2e3f68; border-radius:10px; background:#0f162c; padding:10px; }
     .chain-flow { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px; }
     .chain-node { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; border:1px solid #2e3f68; background:#121c3a; font-size:12px; }
@@ -299,6 +303,7 @@
         </div>
         <div id="opsStageProgress" class="ops-stage-card advanced-only" style="display:none">
           <div style="font-weight:700">Ops Stage Progress</div>
+          <div id="opsStageBadges" class="ops-stage-badges"></div>
           <div id="opsStageGrid" class="ops-stage-grid"></div>
           <div id="opsStageMeta" class="ops-stage-meta">Analyze/Chain/Checklist/Execute/Sheet</div>
         </div>
@@ -418,7 +423,7 @@
   let lastRunProgress = { completed: null, target: null };
   const OPS_STAGE_ORDER = ['Analyze', 'Chain', 'Checklist', 'Execute', 'Sheet'];
   const OPS_STATUS_PRIORITY = { pending: 0, running: 1, done: 2, error: 3 };
-  let opsStageState = { stages: {}, completed: null, target: null, updatedAt: null };
+  let opsStageState = { stages: {}, completed: null, target: null, activeLaneCount: null, lastSuccessfulRerun: null, updatedAt: null };
   let endpointHealthState = { apiHealth: 'unknown', oneclickReady: 'unknown', lastCheckedAt: null, detail: '' };
 
   function pickFirstNumber(...vals) {
@@ -487,6 +492,20 @@
     return null;
   }
 
+  function normalizeRerunBadge(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const okRaw = payload.ok ?? payload.success ?? payload.passed ?? payload.status;
+    const okText = String(okRaw || '').toLowerCase();
+    const ok = (typeof okRaw === 'boolean') ? okRaw : (okText.includes('success') || okText.includes('ok') || okText.includes('pass'));
+    if (!ok) return null;
+    const atRaw = payload.at ?? payload.time ?? payload.timestamp ?? payload.completedAt ?? payload.updatedAt;
+    const at = atRaw ? new Date(atRaw) : null;
+    const atLabel = (at && Number.isFinite(at.getTime()))
+      ? at.toLocaleTimeString('ko-KR', { hour12: false })
+      : null;
+    return { ok: true, label: 'last rerun OK', at: atLabel };
+  }
+
   function mergeOpsStageState(next) {
     const merged = { ...opsStageState, stages: { ...(opsStageState.stages || {}) } };
     if (next?.stages) {
@@ -504,6 +523,12 @@
     };
     merged.completed = pickNonDecreasing(merged.completed, next?.completed);
     merged.target = pickNonDecreasing(merged.target, next?.target);
+    if (next?.activeLaneCount != null && Number.isFinite(Number(next.activeLaneCount))) {
+      merged.activeLaneCount = Number(next.activeLaneCount);
+    }
+    if (next?.lastSuccessfulRerun?.ok) {
+      merged.lastSuccessfulRerun = next.lastSuccessfulRerun;
+    }
     merged.updatedAt = Date.now();
     opsStageState = merged;
     return merged;
@@ -511,9 +536,10 @@
 
   function renderOpsStageProgress(next = null) {
     const card = document.getElementById('opsStageProgress');
+    const badges = document.getElementById('opsStageBadges');
     const grid = document.getElementById('opsStageGrid');
     const meta = document.getElementById('opsStageMeta');
-    if (!card || !grid || !meta) return;
+    if (!card || !badges || !grid || !meta) return;
 
     const merged = mergeOpsStageState(next || {});
     const uiMode = (localStorage.getItem('QA_UI_MODE') || 'simple').trim();
@@ -528,6 +554,16 @@
       return `<div class="ops-stage-pill ${cls}">${stage}<div style="font-size:11px; margin-top:2px">${status}</div></div>`;
     }).join('');
 
+    const badgeItems = [];
+    if (merged.activeLaneCount != null && Number.isFinite(Number(merged.activeLaneCount))) {
+      badgeItems.push(`<span class="ops-stage-badge">active lanes <b>${safeText(String(merged.activeLaneCount))}</b></span>`);
+    }
+    if (merged.lastSuccessfulRerun?.ok) {
+      const at = merged.lastSuccessfulRerun.at ? ` · ${safeText(merged.lastSuccessfulRerun.at)}` : '';
+      badgeItems.push(`<span class="ops-stage-badge ok">${safeText(merged.lastSuccessfulRerun.label || 'last rerun OK')}${at}</span>`);
+    }
+    badges.innerHTML = badgeItems.join('');
+
     const done = merged.completed != null ? merged.completed : '-';
     const total = merged.target != null ? merged.target : '-';
     const updated = merged.updatedAt ? new Date(merged.updatedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-';
@@ -535,15 +571,16 @@
   }
 
   function resetOpsStageProgress(seed = {}) {
-    opsStageState = { stages: {}, completed: null, target: null, updatedAt: null };
+    opsStageState = { stages: {}, completed: null, target: null, activeLaneCount: null, lastSuccessfulRerun: null, updatedAt: null };
     renderOpsStageProgress(seed);
   }
 
   function extractOpsStagePayload(payload = {}, fallback = {}) {
     const root = (payload && typeof payload === 'object') ? payload : {};
-    const next = { stages: {}, completed: null, target: null };
+    const next = { stages: {}, completed: null, target: null, activeLaneCount: null, lastSuccessfulRerun: null };
     const phaseBuckets = [root.phases, root.userPhase, root.adminPhase, root.bridgePhase, root.stageProgress, root.progressStages].filter(Array.isArray);
-    phaseBuckets.flat().forEach((p) => {
+    const phases = phaseBuckets.flat();
+    phases.forEach((p) => {
       const stage = mapPhaseToOpsStage(p?.name || p?.stage || p?.type);
       if (!stage) return;
       next.stages[stage] = normalizeOpsStatus(p?.status || p?.state);
@@ -559,6 +596,29 @@
       root.target_rows, root.targetRows, root.progress?.target_rows, root.progress?.totalRows,
       root.summary?.target_rows, fallback.target
     );
+
+    const computedActive = phases.filter((p) => {
+      const st = normalizeOpsStatus(p?.status || p?.state);
+      return st === 'running';
+    }).length;
+    next.activeLaneCount = pickFirstNumber(
+      root.activeLaneCount,
+      root.active_lanes,
+      root.summary?.activeLaneCount,
+      root.summary?.active_lanes,
+      root.progress?.activeLaneCount,
+      root.progress?.active_lanes,
+      computedActive || null
+    );
+
+    const rerunCandidate = root.lastSuccessfulRerun
+      || root.last_successful_rerun
+      || root.rerun
+      || root.rerunStatus
+      || root.summary?.lastSuccessfulRerun
+      || root.summary?.last_successful_rerun
+      || root.summary?.rerun;
+    next.lastSuccessfulRerun = normalizeRerunBadge(rerunCandidate);
     return next;
   }
 
