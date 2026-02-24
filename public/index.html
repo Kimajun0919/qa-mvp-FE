@@ -935,6 +935,25 @@
     return text || fallback;
   }
 
+  function parseDecompRefs(text) {
+    const raw = String(text || '');
+    const m = raw.match(/decompRefs\s*=\s*([^\n]+)/i);
+    if (!m) return {};
+    const tail = String(m[1] || '').trim();
+    if (!tail) return {};
+    return tail.split(';').reduce((acc, token) => {
+      const t = String(token || '').trim();
+      if (!t) return acc;
+      const idx = t.indexOf(':');
+      if (idx <= 0) return acc;
+      const key = t.slice(0, idx).trim().toLowerCase();
+      const value = t.slice(idx + 1).trim();
+      if (!key || !value || value === '-') return acc;
+      acc[key] = value;
+      return acc;
+    }, {});
+  }
+
   function normalizeDecompRows(payload) {
     const root = (payload && typeof payload === 'object') ? payload : {};
     const buckets = [
@@ -956,13 +975,14 @@
 
     return source.map((row) => {
       const r = (row && typeof row === 'object') ? row : {};
+      const refs = parseDecompRefs(r.note || r['비고'] || r.remark || r.remarks);
       const screen = normalizeGroupLabel(r.screen || r['화면'] || r.page || r.pageName || r.route || r.urlHost || r.path);
       const section = normalizeGroupLabel(r.section || r['섹션'] || r.group || r.module || r.component || r.zone || r.block);
-      const field = normalizeDecompName(r.field || r['필드'] || r.fieldName || r.targetField);
-      const action = normalizeDecompName(r.action || r['액션'] || r.stepAction || r.interaction);
-      const assertion = normalizeDecompName(r.assertion || r['검증'] || r.expectation || r.assert);
-      const error = normalizeFailCode(r.errorCode || r.code || r.error || r['실패코드']);
-      const evidenceRaw = String(r.evidence || r.message || r.reason || r['증거'] || '').trim();
+      const field = normalizeDecompName(r.field || r['필드'] || r.fieldName || r.targetField || refs.field);
+      const action = normalizeDecompName(r.action || r['액션'] || r.stepAction || r.interaction || refs.action);
+      const assertion = normalizeDecompName(r.assertion || r['검증'] || r.expectation || r.assert || refs.assert);
+      const error = normalizeFailCode(r.errorCode || r.code || r.error || r['실패코드'] || refs.error);
+      const evidenceRaw = String(r.evidence || r.message || r.reason || r['증거'] || refs.evidence || '').trim();
       const hasEvidence = Boolean(evidenceRaw);
       const evidence = hasEvidence ? evidenceRaw : '(증거 없음)';
       return { screen, section, field, action, assertion, error, evidence, hasEvidence };
@@ -1066,19 +1086,20 @@
         if (String(r['실행결과'] || '').toUpperCase() === 'PASS') return;
         const meta = (r['실행메타'] && typeof r['실행메타'] === 'object') ? r['실행메타'] : {};
         const scenario = String(r['테스트시나리오'] || '').trim();
+        const refs = parseDecompRefs(r['비고'] || r.note || r.remark || '');
         const screen = normalizeGroupLabel(r['화면'] || r['screen'] || meta.screen || meta.page || meta.route || meta.url || scenario.split('>').shift());
         const section = normalizeGroupLabel(r['구분'] || r['section'] || meta.section || meta.module || meta.component || meta.scenarioKind);
         const field = normalizeDecompName(
-          r['필드'] || r['field'] || meta.field || meta.fieldName || meta.input || meta.targetField || r['화면']
+          r['필드'] || r['field'] || meta.field || meta.fieldName || meta.input || meta.targetField || refs.field || r['화면']
         );
         const action = normalizeDecompName(
-          r['액션'] || r['action'] || meta.action || meta.stepAction || meta.interaction || meta.scenarioKind
+          r['액션'] || r['action'] || meta.action || meta.stepAction || meta.interaction || meta.scenarioKind || refs.action
         );
         const assertion = normalizeDecompName(
-          r['검증'] || r['assertion'] || meta.assertion || meta.expectation || r['실패사유']
+          r['검증'] || r['assertion'] || meta.assertion || meta.expectation || refs.assert || r['실패사유']
         );
-        const error = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode);
-        const evidenceRaw = String(r['증거'] || meta.evidence || meta.error || '').trim();
+        const error = normalizeFailCode(r['실패코드'] || r['errorCode'] || meta.errorCode || meta.failCode || refs.error);
+        const evidenceRaw = String(r['증거'] || meta.evidence || meta.error || refs.evidence || '').trim();
         const hasEvidence = Boolean(evidenceRaw);
 
         const row = { screen, section, field, action, assertion, error, evidence: evidenceRaw || '(증거 없음)', hasEvidence };
